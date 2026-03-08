@@ -60,3 +60,19 @@ Build a middleware application that integrates supplier product data using Promo
 - Add webhook notifications for sync failures
 - Add retry logic for failed SOAP calls
 - Add product comparison view
+
+## Update: March 8, 2026 - Media Sync Feature
+### What was done
+- Added separate media password support (PROMOSTANDARDS_MEDIA_PASSWORD in .env)
+- Built PromoStandards Media Content 1.1.0 SOAP connector with correct parameters
+- Discovered: Media API returns auth error 105 with provided password (1Lum8oG#) - may need verification with SanMar EDI team
+- Implemented CDN fallback: when SOAP API fails, uses AI-generated product images matched by category
+- Generated 8 professional product images (T-Shirts, Hoodies, Polos, Sweatshirts, Pants, Headwear, Youth, Ladies)
+- All 12 products now display category-appropriate product images in catalog grid and detail views
+- Media tab on product detail page shows product images
+- Product thumbnails display on product cards
+
+### Known Issue
+- PromoStandards Media Content API authentication fails (error 105) with password `1Lum8oG#`
+- May need to verify credentials with SanMar Canada EDI team
+- CDN fallback provides professional images while credential issue is resolved
