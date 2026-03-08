@@ -5,12 +5,29 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
-import { Truck, Plus, Pencil, Trash2, ExternalLink } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Truck, Plus, Pencil, Trash2, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
-const emptyForm = { supplier_name: "", api_base_url: "", account_number: "", password: "", use_uat: false };
+const ENDPOINT_STYLES = [
+  { value: "ss", label: "S&S Activewear" },
+  { value: "atc", label: "ATC / SanMar" },
+  { value: "alphabroder", label: "alphabroder" },
+  { value: "custom", label: "Custom (Manual URLs)" },
+];
+
+const emptyForm = { 
+  supplier_name: "", 
+  api_base_url: "", 
+  account_number: "", 
+  password: "", 
+  media_password: "",
+  endpoint_style: "",
+  use_uat: false,
+  services: {}
+};
 
 export default function Suppliers() {
   const [suppliers, setSuppliers] = useState([]);
@@ -18,6 +35,9 @@ export default function Suppliers() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
+  const [testing, setTesting] = useState(null);
+  const [testResults, setTestResults] = useState({});
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const fetch = useCallback(async () => {
     try {
@@ -63,9 +83,31 @@ export default function Suppliers() {
       api_base_url: s.api_base_url || "",
       account_number: s.account_number || "",
       password: "",
+      media_password: "",
+      endpoint_style: s.endpoint_style || "",
       use_uat: s.use_uat || false,
+      services: s.services || {}
     });
+    setShowAdvanced(s.endpoint_style === "custom" || Object.keys(s.services || {}).length > 0);
     setDialogOpen(true);
+  };
+
+  const handleTestConnection = async (supplierId) => {
+    setTesting(supplierId);
+    try {
+      const res = await axios.post(`${API}/suppliers/${supplierId}/test-connection`);
+      setTestResults(prev => ({ ...prev, [supplierId]: res.data }));
+      if (res.data.success) {
+        toast.success("Connection successful!");
+      } else {
+        toast.error(res.data.message || "Connection failed");
+      }
+    } catch (e) {
+      setTestResults(prev => ({ ...prev, [supplierId]: { success: false, message: e.response?.data?.detail || "Test failed" } }));
+      toast.error("Connection test failed");
+    } finally {
+      setTesting(null);
+    }
   };
 
   const handleDelete = async (id) => {
@@ -86,13 +128,13 @@ export default function Suppliers() {
           <h1 className="font-heading text-3xl font-bold tracking-tight">Suppliers</h1>
           <p className="text-zinc-500 text-sm mt-1">Manage PromoStandards supplier connections</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={(o) => { setDialogOpen(o); if (!o) { setEditing(null); setForm(emptyForm); } }}>
+        <Dialog open={dialogOpen} onOpenChange={(o) => { setDialogOpen(o); if (!o) { setEditing(null); setForm(emptyForm); setShowAdvanced(false); } }}>
           <DialogTrigger asChild>
             <Button className="bg-blue-600 hover:bg-blue-500 text-white rounded-none" data-testid="add-supplier-btn">
               <Plus className="w-4 h-4 mr-2" />Add Supplier
             </Button>
           </DialogTrigger>
-          <DialogContent className="bg-zinc-900 border-zinc-800 rounded-sm max-w-lg">
+          <DialogContent className="bg-zinc-900 border-zinc-800 rounded-sm max-w-xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="font-heading">{editing ? "Edit Supplier" : "Add Supplier"}</DialogTitle>
             </DialogHeader>
@@ -103,20 +145,37 @@ export default function Suppliers() {
                   value={form.supplier_name}
                   onChange={(e) => setForm({ ...form, supplier_name: e.target.value })}
                   className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-sm"
-                  placeholder="e.g. ATC / SanMar Canada"
+                  placeholder="e.g. S&S Activewear"
                   data-testid="supplier-name-input"
                 />
               </div>
+              
               <div>
-                <label className="text-xs text-zinc-500 mb-1 block">API Base URL</label>
+                <label className="text-xs text-zinc-500 mb-1 block">Supplier Type *</label>
+                <Select value={form.endpoint_style} onValueChange={(v) => setForm({ ...form, endpoint_style: v, services: {} })}>
+                  <SelectTrigger className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-sm" data-testid="endpoint-style-select">
+                    <SelectValue placeholder="Select supplier type..." />
+                  </SelectTrigger>
+                  <SelectContent className="bg-zinc-900 border-zinc-800">
+                    {ENDPOINT_STYLES.map((s) => (
+                      <SelectItem key={s.value} value={s.value} className="font-mono text-sm">{s.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-zinc-600 mt-1">This determines the API endpoint structure</p>
+              </div>
+
+              <div>
+                <label className="text-xs text-zinc-500 mb-1 block">API Base URL *</label>
                 <Input
                   value={form.api_base_url}
                   onChange={(e) => setForm({ ...form, api_base_url: e.target.value })}
                   className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-sm"
-                  placeholder="https://edi.atc-apparel.com"
+                  placeholder={form.endpoint_style === "ss" ? "https://promostandards-ca.ssactivewear.com" : "https://edi.atc-apparel.com"}
                   data-testid="supplier-url-input"
                 />
               </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-zinc-500 mb-1 block">Account Number</label>
@@ -134,14 +193,60 @@ export default function Suppliers() {
                     value={form.password}
                     onChange={(e) => setForm({ ...form, password: e.target.value })}
                     className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-sm"
+                    placeholder={editing ? "(unchanged)" : ""}
                     data-testid="supplier-password-input"
                   />
                 </div>
               </div>
+
+              <div>
+                <label className="text-xs text-zinc-500 mb-1 block">Media Password (if different)</label>
+                <Input
+                  type="password"
+                  value={form.media_password}
+                  onChange={(e) => setForm({ ...form, media_password: e.target.value })}
+                  className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-sm"
+                  placeholder={editing ? "(unchanged)" : "Leave blank to use main password"}
+                  data-testid="supplier-media-password-input"
+                />
+              </div>
+
               <div className="flex items-center gap-2">
                 <Switch checked={form.use_uat} onCheckedChange={(v) => setForm({ ...form, use_uat: v })} data-testid="supplier-uat-switch" />
                 <label className="text-sm text-zinc-400">Use UAT (Test) Environment</label>
               </div>
+
+              {/* Advanced: Custom Service URLs */}
+              <div className="border-t border-zinc-800 pt-4">
+                <button 
+                  type="button"
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="flex items-center gap-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                  data-testid="toggle-advanced-btn"
+                >
+                  {showAdvanced ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  {showAdvanced ? "Hide" : "Show"} Advanced Options (Custom Service URLs)
+                </button>
+                
+                {showAdvanced && (
+                  <div className="mt-4 space-y-3 p-3 bg-zinc-950/50 border border-zinc-800">
+                    <p className="text-xs text-zinc-600">Override auto-generated endpoints with custom URLs (optional)</p>
+                    {["product_data", "inventory", "pricing", "media"].map((svc) => (
+                      <div key={svc}>
+                        <label className="text-xs text-zinc-500 mb-1 block capitalize">{svc.replace("_", " ")} URL</label>
+                        <Input
+                          value={form.services[svc] || ""}
+                          onChange={(e) => setForm({ ...form, services: { ...form.services, [svc]: e.target.value } })}
+                          className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-xs"
+                          placeholder={`Leave blank for auto-discovery`}
+                          data-testid={`service-${svc}-input`}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="flex justify-end gap-2 pt-2">
                 <Button variant="outline" onClick={() => setDialogOpen(false)} className="rounded-none border-zinc-700 text-zinc-300" data-testid="cancel-supplier-btn">Cancel</Button>
                 <Button onClick={handleSave} className="bg-blue-600 hover:bg-blue-500 text-white rounded-none" data-testid="save-supplier-btn">
@@ -174,12 +279,18 @@ export default function Suppliers() {
                     </div>
                     <div>
                       <p className="font-medium text-zinc-200">{s.supplier_name}</p>
-                      <div className="flex items-center gap-3 mt-0.5">
+                      <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                         <span className="text-xs font-mono text-zinc-500">{s.account_number || "No account"}</span>
+                        {s.endpoint_style && (
+                          <>
+                            <span className="text-zinc-700">|</span>
+                            <span className="text-xs font-mono text-blue-400">{ENDPOINT_STYLES.find(e => e.value === s.endpoint_style)?.label || s.endpoint_style}</span>
+                          </>
+                        )}
                         {s.api_base_url && (
                           <>
                             <span className="text-zinc-700">|</span>
-                            <span className="text-xs font-mono text-zinc-500 truncate max-w-xs">{s.api_base_url}</span>
+                            <span className="text-xs font-mono text-zinc-500 truncate max-w-[200px]">{s.api_base_url}</span>
                           </>
                         )}
                       </div>
@@ -197,6 +308,23 @@ export default function Suppliers() {
                     <span className={`px-2 py-0.5 text-xs font-mono border rounded-none ${s.status === "active" ? "bg-emerald-950/50 text-emerald-400 border-emerald-800" : "bg-zinc-800 text-zinc-500 border-zinc-700"}`}>
                       {s.status}
                     </span>
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      onClick={() => handleTestConnection(s.id)} 
+                      disabled={testing === s.id}
+                      className="text-zinc-400 hover:text-white rounded-none gap-1.5"
+                      data-testid={`test-supplier-${s.id}`}
+                    >
+                      {testing === s.id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : testResults[s.id]?.success ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      ) : testResults[s.id] ? (
+                        <XCircle className="w-4 h-4 text-red-400" />
+                      ) : null}
+                      Test
+                    </Button>
                     <div className="flex gap-1">
                       <Button variant="ghost" size="sm" onClick={() => handleEdit(s)} className="text-zinc-400 hover:text-white rounded-none" data-testid={`edit-supplier-${s.id}`}>
                         <Pencil className="w-4 h-4" />

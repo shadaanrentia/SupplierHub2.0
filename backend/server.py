@@ -38,16 +38,20 @@ class SupplierCreate(BaseModel):
     api_base_url: str = ""
     account_number: str = ""
     password: str = ""
+    media_password: str = ""
     use_uat: bool = False
     services: Dict[str, str] = {}
+    endpoint_style: str = ""  # "atc", "ss", "custom"
 
 class SupplierUpdate(BaseModel):
     supplier_name: Optional[str] = None
     api_base_url: Optional[str] = None
     account_number: Optional[str] = None
     password: Optional[str] = None
+    media_password: Optional[str] = None
     use_uat: Optional[bool] = None
     services: Optional[Dict[str, str]] = None
+    endpoint_style: Optional[str] = None
     status: Optional[str] = None
 
 class ProductSelectRequest(BaseModel):
@@ -132,6 +136,35 @@ async def startup():
 
 
 # ==================== SUPPLIER ROUTES ====================
+
+# Standard PromoStandards endpoint patterns by supplier type (without ?wsdl - using raw SOAP)
+ENDPOINT_PATTERNS = {
+    "ss": {
+        "product_data": "{base}/ProductData/v2/ProductDataServicev2.svc",
+        "inventory": "{base}/Inventory/v2/InventoryService.svc",
+        "pricing": "{base}/PricingAndConfiguration/v1/PricingAndConfigurationService.svc",
+        "media": "{base}/MediaContent/v1/MediaContentService.svc",
+    },
+    "atc": {
+        "product_data": "{base}/pstd/productdata2.0/ProductDataServiceV2.php",
+        "inventory": "{base}/pstd/inventory2.0/InventoryServiceV2.php",
+        "pricing": "{base}/pstd/productpricingconfiguration/PricingAndConfigurationService.php",
+        "media": "{base}/pstd/mediacontent1.1/MediaContentService.php",
+    },
+    "alphabroder": {
+        "product_data": "{base}/promostandards/ProductDataService/v2.0.0/ProductDataService.svc",
+        "inventory": "{base}/promostandards/InventoryService/v2.0.0/InventoryService.svc",
+        "pricing": "{base}/promostandards/PricingAndConfigurationService/v1.0.0/PricingAndConfigurationService.svc",
+        "media": "{base}/promostandards/MediaContentService/v1.1.0/MediaContentService.svc",
+    },
+}
+
+def auto_discover_endpoints(base_url: str, style: str) -> Dict[str, str]:
+    """Generate service endpoint URLs from a base URL and endpoint style."""
+    base = base_url.rstrip('/')
+    pattern = ENDPOINT_PATTERNS.get(style, {})
+    return {k: v.format(base=base) for k, v in pattern.items()}
+
 @api_router.get("/suppliers")
 async def list_suppliers():
     suppliers = await db.suppliers.find({}, {"_id": 0}).to_list(100)
@@ -151,7 +184,11 @@ async def get_supplier(supplier_id: str):
 
 @api_router.post("/suppliers")
 async def create_supplier(data: SupplierCreate):
-    doc = {"id": new_id(), **data.model_dump(), "last_sync_time": None, "products_count": 0, "status": "active", "created_at": utc_now(), "updated_at": utc_now()}
+    doc = data.model_dump()
+    # Auto-discover endpoints if style is set and services are empty
+    if doc.get('endpoint_style') and doc.get('api_base_url') and not doc.get('services'):
+        doc['services'] = auto_discover_endpoints(doc['api_base_url'], doc['endpoint_style'])
+    doc = {"id": new_id(), **doc, "last_sync_time": None, "products_count": 0, "status": "active", "created_at": utc_now(), "updated_at": utc_now()}
     await db.suppliers.insert_one(doc)
     doc.pop('_id', None)
     return doc
@@ -175,6 +212,22 @@ async def delete_supplier(supplier_id: str):
     await db.products.delete_many({"supplier_id": supplier_id})
     await db.product_variants.delete_many({"supplier_id": supplier_id})
     return {"status": "deleted"}
+
+
+@api_router.post("/suppliers/{supplier_id}/test-connection")
+async def test_supplier_connection(supplier_id: str):
+    """Test connectivity to a supplier's PromoStandards API."""
+    supplier = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})
+    if not supplier:
+        raise HTTPException(404, "Supplier not found")
+    try:
+        from promostandards import PromoStandardsConnector
+        connector = PromoStandardsConnector(supplier)
+        result = connector.test_connection()
+        return result
+    except Exception as e:
+        logger.error(f"Connection test failed for supplier {supplier_id}: {e}")
+        return {"success": False, "connected": False, "message": str(e)}
 
 
 # ==================== PRODUCT ROUTES ====================
@@ -353,10 +406,17 @@ async def run_product_sync(supplier: dict, sync_log_id: str):
                 if pr['success'] and pr.get('product'):
                     pd = pr['product']
                     now = utc_now()
+                    # Clean product name - use SKU as fallback if empty or invalid
+                    product_name = pd.get('product_name', '')
+                    if not product_name or product_name in ['Array', 'Object', 'Error Product', '']:
+                        product_name = pid
+                    
                     existing = await db.products.find_one({"supplier_id": supplier["id"], "supplier_sku": pid}, {"_id": 0})
                     if existing:
+                        # Only update name if new name is valid
+                        update_name = product_name if product_name != pid else existing.get('product_name', pid)
                         await db.products.update_one({"id": existing["id"]}, {"$set": {
-                            "product_name": pd.get('product_name') or existing['product_name'],
+                            "product_name": update_name,
                             "description": pd.get('description') or existing.get('description', ''),
                             "brand": pd.get('brand') or existing.get('brand', ''),
                             "category": pd.get('category') or existing.get('category', ''),
@@ -368,7 +428,7 @@ async def run_product_sync(supplier: dict, sync_log_id: str):
                         prod_id = new_id()
                         await db.products.insert_one({
                             "id": prod_id, "supplier_id": supplier["id"], "supplier_sku": pid,
-                            "product_name": pd.get('product_name', pid), "description": pd.get('description', ''),
+                            "product_name": product_name, "description": pd.get('description', ''),
                             "brand": pd.get('brand', ''), "category": pd.get('category', ''),
                             "base_price": 0.0, "status": "active", "variants_count": len(pd.get('variants', [])),
                             "media_count": 0, "selected_for_odoo": False, "sync_status": "not_selected",
