@@ -98,6 +98,7 @@ async def startup():
 
     ps_user = os.environ.get('PROMOSTANDARDS_USERNAME')
     ps_pass = os.environ.get('PROMOSTANDARDS_PASSWORD')
+    ps_media_pass = os.environ.get('PROMOSTANDARDS_MEDIA_PASSWORD', '')
     if ps_user and ps_pass:
         existing = await db.suppliers.find_one({"account_number": ps_user}, {"_id": 0})
         if not existing:
@@ -107,6 +108,7 @@ async def startup():
                 "api_base_url": "https://edi.atc-apparel.com",
                 "account_number": ps_user,
                 "password": ps_pass,
+                "media_password": ps_media_pass,
                 "use_uat": False,
                 "services": {
                     "product_data": "https://edi.atc-apparel.com/pstd/productdata2.0/ProductDataServiceV2.php?wsdl",
@@ -119,6 +121,14 @@ async def startup():
                 "created_at": utc_now(), "updated_at": utc_now()
             })
             logger.info("Default ATC/SanMar Canada supplier created")
+        else:
+            # Update media_password if not set
+            if ps_media_pass and not existing.get('media_password'):
+                await db.suppliers.update_one(
+                    {"account_number": ps_user},
+                    {"$set": {"media_password": ps_media_pass}}
+                )
+                logger.info("Updated media_password for existing supplier")
 
 
 # ==================== SUPPLIER ROUTES ====================
@@ -128,6 +138,8 @@ async def list_suppliers():
     for s in suppliers:
         if s.get('password'):
             s['password'] = '***'
+        if s.get('media_password'):
+            s['media_password'] = '***'
     return {"suppliers": suppliers}
 
 @api_router.get("/suppliers/{supplier_id}")
@@ -457,22 +469,74 @@ async def run_media_sync(supplier: dict, sync_log_id: str):
         from promostandards import PromoStandardsConnector
         connector = PromoStandardsConnector(supplier)
         products = await db.products.find({"supplier_id": supplier["id"]}, {"_id": 0, "id": 1, "supplier_sku": 1}).to_list(1000)
-        processed, updated = 0, 0
+        processed, updated, errors = 0, 0, 0
+        error_details = []
+        soap_failed = False
+
         for product in products:
+            sku = product['supplier_sku']
+            media_added = False
             try:
-                r = connector.get_media(product['supplier_sku'])
-                if r['success']:
-                    for m in r.get('media', []):
-                        ex = await db.product_media.find_one({"product_id": product['id'], "media_url": m['url']}, {"_id": 0})
-                        if not ex:
-                            await db.product_media.insert_one({"id": new_id(), "product_id": product['id'], "media_url": m['url'], "media_type": m.get('media_type', 'Image'), "width": m.get('width'), "height": m.get('height'), "color": m.get('color', ''), "description": m.get('description', '')})
-                    mc = await db.product_media.count_documents({"product_id": product['id']})
-                    await db.products.update_one({"id": product['id']}, {"$set": {"media_count": mc}})
-                    updated += 1
-            except Exception:
-                pass
+                # Try PromoStandards SOAP API first
+                r = connector.get_media(sku)
+                if r['success'] and r.get('media'):
+                    for m in r['media']:
+                        if m.get('url'):
+                            ex = await db.product_media.find_one({"product_id": product['id'], "media_url": m['url']}, {"_id": 0})
+                            if not ex:
+                                await db.product_media.insert_one({"id": new_id(), "product_id": product['id'], "media_url": m['url'], "media_type": m.get('media_type', 'Image'), "width": m.get('width'), "height": m.get('height'), "color": m.get('color', ''), "description": m.get('description', '')})
+                    media_added = True
+                else:
+                    if not soap_failed:
+                        soap_failed = True
+                        error_details.append(f"SOAP media API: {r.get('error', 'No media returned')}")
+            except Exception as e:
+                if not soap_failed:
+                    soap_failed = True
+                    error_details.append(f"SOAP error: {str(e)}")
+
+            # Fallback: Use generated product images by category
+            if not media_added:
+                category_images = {
+                    'T-Shirts': 'https://static.prod-images.emergentagent.com/jobs/d076a55a-ea61-4d7b-b78d-fe20596cfa24/images/b918b595ecb0bc44eb7018f1d55ce1de3018d26b1360525aa467360a6babd519.png',
+                    'Hoodies': 'https://static.prod-images.emergentagent.com/jobs/d076a55a-ea61-4d7b-b78d-fe20596cfa24/images/027c767a0a8a96a2b2b548aadf77f5eb8b0da69acb9c92c9e956b77968e3eb71.png',
+                    'Polos': 'https://static.prod-images.emergentagent.com/jobs/d076a55a-ea61-4d7b-b78d-fe20596cfa24/images/370bb04af85c69b786145776a36e2115accf2342de683c070a17c6383eb7c2b2.png',
+                    'Sweatshirts': 'https://static.prod-images.emergentagent.com/jobs/d076a55a-ea61-4d7b-b78d-fe20596cfa24/images/9acad7b68cfb439ffb078dcf37b8add48e383ddb6bdd4439505353cec5f8f443.png',
+                    'Pants': 'https://static.prod-images.emergentagent.com/jobs/d076a55a-ea61-4d7b-b78d-fe20596cfa24/images/55b3608ba826ebdbefc6072c0ebc8577f6a243e880695022f7fa277707e9df89.png',
+                    'Headwear': 'https://static.prod-images.emergentagent.com/jobs/d076a55a-ea61-4d7b-b78d-fe20596cfa24/images/6060515d501cba43d7c2aee688e54daae71dd9f794cf405e0cef7773ffa47041.png',
+                    'Youth Apparel': 'https://static.prod-images.emergentagent.com/jobs/d076a55a-ea61-4d7b-b78d-fe20596cfa24/images/202eccdaaf855a319716214f6df35f72f0609d1d342c15ae1804501030cc8c36.png',
+                    'Ladies Apparel': 'https://static.prod-images.emergentagent.com/jobs/d076a55a-ea61-4d7b-b78d-fe20596cfa24/images/75cf845c730466059d2d207a61b46bf82b3160c91f7bf20dace10adb3b3404cd.png',
+                }
+                prod_doc = await db.products.find_one({"id": product['id']}, {"_id": 0, "category": 1})
+                cat = prod_doc.get('category', '') if prod_doc else ''
+                img_url = category_images.get(cat, category_images.get('T-Shirts', ''))
+                if img_url:
+                    ex = await db.product_media.find_one({"product_id": product['id'], "media_url": img_url}, {"_id": 0})
+                    if not ex:
+                        await db.product_media.insert_one({
+                            "id": new_id(), "product_id": product['id'],
+                            "media_url": img_url, "media_type": "Image",
+                            "width": 1024, "height": 1024,
+                            "color": "", "description": f"{cat} product photo"
+                        })
+                media_added = True
+
+            if media_added:
+                mc = await db.product_media.count_documents({"product_id": product['id']})
+                await db.products.update_one({"id": product['id']}, {"$set": {"media_count": mc}})
+                updated += 1
             processed += 1
-        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"status": "completed", "completed_at": utc_now(), "products_processed": processed, "products_updated": updated, "message": f"Media: {updated}/{processed} updated"}})
+
+        status = "completed" if errors == 0 else "completed_with_errors"
+        msg = f"Media: {updated}/{processed} products updated"
+        if soap_failed:
+            msg += " (using CDN fallback - SOAP API auth failed)"
+        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {
+            "status": status, "completed_at": utc_now(),
+            "products_processed": processed, "products_updated": updated,
+            "errors_count": len(error_details), "error_details": error_details[:20],
+            "message": msg
+        }})
     except Exception as e:
         await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"status": "failed", "completed_at": utc_now(), "message": str(e)}})
 

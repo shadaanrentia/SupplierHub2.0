@@ -20,6 +20,7 @@ class PromoStandardsConnector:
         self.supplier_id = supplier_config.get('id', '')
         self.account_id = supplier_config.get('account_number', '')
         self.password = supplier_config.get('password', '')
+        self.media_password = supplier_config.get('media_password', '') or self.password
         self.services = supplier_config.get('services', {})
         self.clients = {}
         if ZEEP_AVAILABLE:
@@ -223,22 +224,30 @@ class PromoStandardsConnector:
         try:
             response = client.service.getMediaContent(
                 wsVersion='1.1.0',
-                Id=str(self.account_id),
-                Password=self.password,
+                id=str(self.account_id),
+                password=self.media_password,
+                cultureName='en-us',
                 mediaType='Image',
-                productId=product_id
+                productId=product_id,
+                partId='',
+                classType=1006
             )
             media = []
             if hasattr(response, 'MediaContentArray') and response.MediaContentArray:
-                for item in response.MediaContentArray.MediaContent:
-                    media.append({
-                        'url': str(getattr(item, 'url', '')),
-                        'media_type': str(getattr(item, 'mediaType', 'Image')),
-                        'width': getattr(item, 'width', None),
-                        'height': getattr(item, 'height', None),
-                        'color': str(getattr(item, 'color', '') or ''),
-                        'description': str(getattr(item, 'description', '') or '')
-                    })
+                mc_arr = response.MediaContentArray
+                items = mc_arr.MediaContent if hasattr(mc_arr, 'MediaContent') else []
+                for item in items:
+                    url = str(getattr(item, 'url', '') or '')
+                    if url:
+                        media.append({
+                            'url': url,
+                            'media_type': str(getattr(item, 'mediaType', 'Image') or 'Image'),
+                            'width': getattr(item, 'width', None),
+                            'height': getattr(item, 'height', None),
+                            'color': str(getattr(item, 'color', '') or ''),
+                            'description': str(getattr(item, 'description', '') or '')
+                        })
+            logger.info(f"Got {len(media)} media items for {product_id}")
             return {'success': True, 'media': media}
         except Exception as e:
             logger.error(f"getMediaContent error [{product_id}]: {e}")
