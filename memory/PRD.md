@@ -26,7 +26,13 @@ Build a middleware application that integrates supplier product data using Promo
 
 ## What's Been Implemented
 
-### March 8, 2026 - Multi-Supplier Support (CURRENT)
+### March 8, 2026 - Quick Sync All Feature
+- **Quick Sync All Button**: Dashboard button that triggers Products → Media → Pricing syncs for all suppliers sequentially
+- **Progress Indicator**: Shows current sync step, supplier name, and progress bar (X/total steps)
+- **Auto-polling**: Waits for each sync to complete before moving to next step
+- **Error Handling**: Continues with remaining syncs if one fails, logs warnings
+
+### March 8, 2026 - Multi-Supplier Support
 - **Raw SOAP XML Connector**: Replaced zeep/WSDL-dependent approach with raw SOAP XML requests
 - **Supplier Type Selection**: Frontend dropdown for selecting supplier endpoint patterns (S&S, ATC, alphabroder, custom)
 - **Auto-Endpoint Discovery**: Service URLs auto-generated based on supplier type and base URL

@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Package, Truck, Check, ArrowUpRight, Layers, RefreshCw } from "lucide-react";
+import { Package, Truck, Check, ArrowUpRight, Layers, RefreshCw, Zap, Loader2 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import { toast } from "sonner";
+import { Progress } from "@/components/ui/progress";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#06B6D4", "#EC4899", "#F97316"];
@@ -27,6 +28,8 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
+  const [quickSyncing, setQuickSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0, step: "", supplier: "" });
 
   const fetchStats = useCallback(async () => {
     try {
@@ -60,6 +63,75 @@ export default function Dashboard() {
     }
   };
 
+  const quickSyncAll = async () => {
+    setQuickSyncing(true);
+    setSyncProgress({ current: 0, total: 0, step: "Fetching suppliers...", supplier: "" });
+    
+    try {
+      // Get all suppliers
+      const suppliersRes = await axios.get(`${API}/suppliers`);
+      const suppliers = suppliersRes.data.suppliers || [];
+      
+      if (suppliers.length === 0) {
+        toast.error("No suppliers configured. Add a supplier first.");
+        setQuickSyncing(false);
+        return;
+      }
+
+      const syncSteps = ["products", "media", "pricing"];
+      const totalSteps = suppliers.length * syncSteps.length;
+      let currentStep = 0;
+
+      for (const supplier of suppliers) {
+        for (const syncType of syncSteps) {
+          currentStep++;
+          setSyncProgress({
+            current: currentStep,
+            total: totalSteps,
+            step: syncType.charAt(0).toUpperCase() + syncType.slice(1),
+            supplier: supplier.supplier_name
+          });
+
+          try {
+            const res = await axios.post(`${API}/sync/${syncType}/${supplier.id}`);
+            
+            // Poll for completion (max 120 seconds per sync)
+            if (res.data.sync_log_id) {
+              let attempts = 0;
+              const maxAttempts = 60; // 60 * 2s = 120s max
+              
+              while (attempts < maxAttempts) {
+                await new Promise(r => setTimeout(r, 2000));
+                const logRes = await axios.get(`${API}/sync/logs/${res.data.sync_log_id}`);
+                const status = logRes.data.status;
+                
+                if (status === "completed" || status === "completed_with_errors" || status === "failed") {
+                  if (status === "failed") {
+                    console.warn(`${syncType} sync failed for ${supplier.supplier_name}: ${logRes.data.message}`);
+                  }
+                  break;
+                }
+                attempts++;
+              }
+            }
+          } catch (syncError) {
+            console.warn(`${syncType} sync error for ${supplier.supplier_name}:`, syncError.message);
+            // Continue with next sync even if one fails
+          }
+        }
+      }
+
+      toast.success("Quick Sync All completed!");
+      fetchStats();
+    } catch (e) {
+      console.error("Quick sync error:", e);
+      toast.error("Quick sync failed: " + (e.response?.data?.detail || e.message));
+    } finally {
+      setQuickSyncing(false);
+      setSyncProgress({ current: 0, total: 0, step: "", supplier: "" });
+    }
+  };
+
   if (loading) {
     return (
       <div className="p-6 space-y-6">
@@ -88,6 +160,15 @@ export default function Dashboard() {
           <p className="text-zinc-500 text-sm mt-1 font-body">PromoStandards Middleware Overview</p>
         </div>
         <div className="flex gap-2">
+          <Button
+            onClick={quickSyncAll}
+            disabled={quickSyncing || stats?.total_suppliers === 0}
+            data-testid="quick-sync-all-btn"
+            className="bg-emerald-600 hover:bg-emerald-500 text-white rounded-none text-sm font-body gap-2"
+          >
+            {quickSyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+            {quickSyncing ? "Syncing..." : "Quick Sync All"}
+          </Button>
           {stats?.total_products === 0 && (
             <Button
               onClick={seedDemo}
@@ -104,6 +185,32 @@ export default function Dashboard() {
           </Button>
         </div>
       </div>
+
+      {/* Quick Sync Progress Indicator */}
+      {quickSyncing && (
+        <Card className="bg-zinc-900/80 border-zinc-700 rounded-sm" data-testid="sync-progress-card">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                <span className="text-sm font-medium text-zinc-200">
+                  Syncing {syncProgress.step} for {syncProgress.supplier}
+                </span>
+              </div>
+              <span className="text-xs font-mono text-zinc-500">
+                {syncProgress.current} / {syncProgress.total}
+              </span>
+            </div>
+            <Progress 
+              value={syncProgress.total > 0 ? (syncProgress.current / syncProgress.total) * 100 : 0} 
+              className="h-2 bg-zinc-800"
+            />
+            <p className="text-xs text-zinc-500 mt-2">
+              Running Products → Media → Pricing syncs for all suppliers...
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {statCards.map((card, i) => (
