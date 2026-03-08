@@ -1,0 +1,172 @@
+{
+  "identity": {
+    "persona": "E1: The Anti-AI Designer",
+    "philosophy": "Fusion over Imitation. Emotion First. Content is King. Zoom In. Negative Space. Contrast.",
+    "mission": "Create a 'Mission Control' dashboard for high-volume B2B product sync. Avoid generic SaaS templates. Prioritize data density, clarity, and speed.",
+    "archetype": "The Performance Pro (Dark Mode Variant)",
+    "vibe": "Tactical, Precise, Industrial, Reliable."
+  },
+  "theme": {
+    "mode": "dark",
+    "strategy": "High Contrast & Data Density",
+    "backgrounds": {
+      "app": "#09090B",
+      "surface": "#18181B",
+      "surface_highlight": "#27272A",
+      "overlay": "rgba(0, 0, 0, 0.8)"
+    },
+    "borders": {
+      "default": "#27272A",
+      "subtle": "#3F3F46",
+      "active": "#52525B"
+    },
+    "colors": {
+      "primary": "#3B82F6",
+      "primary_foreground": "#FFFFFF",
+      "secondary": "#27272A",
+      "secondary_foreground": "#FAFAFA",
+      "accent": "#3B82F6",
+      "destructive": "#EF4444",
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "info": "#0EA5E9",
+      "muted": "#71717A",
+      "text_main": "#FAFAFA",
+      "text_secondary": "#A1A1AA"
+    },
+    "gradients": {
+      "subtle_glow": "linear-gradient(to bottom, rgba(59, 130, 246, 0.1), transparent)",
+      "error_glow": "linear-gradient(to bottom, rgba(239, 68, 68, 0.1), transparent)"
+    }
+  },
+  "typography": {
+    "font_family": {
+      "headings": "Chivo, sans-serif",
+      "body": "Manrope, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "weights": {
+      "headings": "700",
+      "body_regular": "400",
+      "body_medium": "500",
+      "mono": "400"
+    },
+    "sizes": {
+      "h1": "text-4xl tracking-tight",
+      "h2": "text-3xl tracking-tight",
+      "h3": "text-2xl tracking-tight",
+      "body": "text-sm leading-relaxed",
+      "small": "text-xs",
+      "mono": "text-xs tracking-wide"
+    },
+    "rules": [
+      "Use 'Chivo' for all headings (h1-h3).",
+      "Use 'JetBrains Mono' for all IDs, SKUs, API Keys, Logs, and Tabular Data.",
+      "Use 'Manrope' for UI labels, descriptions, and buttons.",
+      "Never use Inter for headings.",
+      "Use tabular-nums class for all numeric data in tables."
+    ]
+  },
+  "layout": {
+    "spacing_scale": {
+      "default": "p-4",
+      "section": "p-6",
+      "container": "p-8",
+      "gap": "gap-4"
+    },
+    "grid_system": {
+      "dashboard": "grid grid-cols-1 md:grid-cols-12 gap-4",
+      "cards": "col-span-12 md:col-span-4 lg:col-span-3",
+      "main_content": "col-span-12 md:col-span-12 lg:col-span-9"
+    },
+    "containers": {
+      "card": "bg-zinc-900 border border-zinc-800 rounded-none",
+      "panel": "bg-background border-r border-zinc-800"
+    }
+  },
+  "components": {
+    "buttons": {
+      "default": "rounded-none font-medium transition-all duration-200 active:scale-95",
+      "primary": "bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_10px_rgba(59,130,246,0.5)] border border-blue-400/20",
+      "secondary": "bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700",
+      "destructive": "bg-red-900/50 text-red-200 hover:bg-red-900/70 border border-red-800",
+      "ghost": "hover:bg-zinc-800 text-zinc-400 hover:text-white"
+    },
+    "inputs": {
+      "default": "bg-zinc-950 border-zinc-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 rounded-none placeholder:text-zinc-600 text-sm font-mono"
+    },
+    "cards": {
+      "style": "bg-zinc-900/50 border border-zinc-800 backdrop-blur-sm rounded-sm hover:border-zinc-700 transition-colors",
+      "header": "p-4 border-b border-zinc-800/50 flex flex-row items-center justify-between",
+      "content": "p-4"
+    },
+    "tables": {
+      "wrapper": "border border-zinc-800 rounded-sm overflow-hidden",
+      "header": "bg-zinc-900/80 text-zinc-400 text-xs font-mono uppercase tracking-wider border-b border-zinc-800",
+      "row": "hover:bg-zinc-800/50 transition-colors border-b border-zinc-800/50 last:border-0",
+      "cell": "p-3 text-sm text-zinc-300 font-mono"
+    },
+    "badges": {
+      "default": "rounded-none px-2 py-0.5 text-xs font-mono border",
+      "success": "bg-emerald-950/50 text-emerald-400 border-emerald-800",
+      "warning": "bg-amber-950/50 text-amber-400 border-amber-800",
+      "error": "bg-red-950/50 text-red-400 border-red-800",
+      "neutral": "bg-zinc-800 text-zinc-400 border-zinc-700"
+    }
+  },
+  "visual_enhancers": {
+    "textures": "Use subtle noise texture on the main background to reduce digital flatness.",
+    "borders": "Use 1px borders everywhere. Avoid heavy shadows. Depth is created by border contrast, not shadow.",
+    "accents": "Use 'Tracing Beam' effect for active sync jobs or selected items.",
+    "empty_states": "Use minimalist ASCII art or technical SVG illustrations for empty states. No playful cartoons."
+  },
+  "assets": {
+    "images": {
+      "industrial_warehouse": "https://images.unsplash.com/photo-1740914994657-f1cdffdc418e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjd8MHwxfHNlYXJjaHwxfHxpbmR1c3RyaWFsJTIwd2FyZWhvdXNlJTIwbG9naXN0aWNzJTIwd29ya2VyfGVufDB8fHx8MTc3MzAwMDcwMXww&ixlib=rb-4.1.0&q=85",
+      "warehouse_worker": "https://images.unsplash.com/photo-1740914994162-0b2a49280aeb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjd8MHwxfHNlYXJjaHwyfHxpbmR1c3RyaWFsJTIwd2FyZWhvdXNlJTIwbG9naXN0aWNzJTIwd29ya2VyfGVufDB8fHx8MTc3MzAwMDcwMXww&ixlib=rb-4.1.0&q=85",
+      "tech_product_1": "https://images.unsplash.com/photo-1662350689234-4068dadadc44?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTZ8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjB0ZWNoJTIwZ2FkZ2V0JTIwcHJvZHVjdCUyMHdoaXRlJTIwYmFja2dyb3VuZHxlbnwwfHx8fDE3NzMwMDA3MDN8MA&ixlib=rb-4.1.0&q=85",
+      "tech_product_2": "https://images.unsplash.com/photo-1662350688742-0d52a8e71fea?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTZ8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjB0ZWNoJTIwZ2FkZ2V0JTIwcHJvZHVjdCUyMHdoaXRlJTIwYmFja2dyb3VuZHxlbnwwfHx8fDE3NzMwMDA3MDN8MA&ixlib=rb-4.1.0&q=85",
+      "apparel_product_1": "https://images.unsplash.com/photo-1564316800929-be17a69d6966?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHw0fHxwcmVtaXVtJTIwYXBwYXJlbCUyMHQtc2hpcnQlMjBob29kaWUlMjBwcm9kdWN0JTIwd2hpdGUlMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3MzAwMDcwM3ww&ixlib=rb-4.1.0&q=85",
+      "user_avatar_1": "https://images.unsplash.com/photo-1689600944138-da3b150d9cb8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODl8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBidXNpbmVzcyUyMHBvcnRyYWl0JTIwaGVhZHNob3R8ZW58MHx8fHwxNzcyOTkzODgxfDA&ixlib=rb-4.1.0&q=85",
+      "user_avatar_2": "https://images.unsplash.com/photo-1576558656222-ba66febe3dec?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODl8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBidXNpbmVzcyUyMHBvcnRyYWl0JTIwaGVhZHNob3R8ZW58MHx8fHwxNzcyOTkzODgxfDA&ixlib=rb-4.1.0&q=85"
+    },
+    "icons": {
+      "library": "lucide-react",
+      "style": "Stroke width 1.5px (Thin/Light)",
+      "instructions": "Use Lucide icons for all standard UI elements. Use simple, recognizable shapes."
+    }
+  },
+  "universal_guidelines": {
+    "anti_ai_rules": [
+      "No purple/teal gradients.",
+      "No rounded corners > 8px (use rounded-sm or rounded-none).",
+      "No 'Inter' font for headings.",
+      "No centered layouts for dashboards.",
+      "No generic 'card grids' - use density."
+    ],
+    "accessibility": [
+      "Ensure contrast ratio > 4.5:1 for normal text.",
+      "Use aria-labels for all icon-only buttons.",
+      "Focus states must be highly visible (ring-2 ring-blue-500)."
+    ],
+    "testing": [
+      "All interactive elements must have data-testid attributes (kebab-case).",
+      "Example: data-testid='sync-button-header'"
+    ],
+    "technical": [
+      "Use 'sonner' for toasts.",
+      "Use 'recharts' for data visualization.",
+      "Use 'date-fns' for date formatting.",
+      "Do not use native HTML date pickers or selects; use Shadcn equivalents."
+    ]
+  },
+  "implementation_plan": {
+    "step_1": "Install fonts (Chivo, Manrope, JetBrains Mono) via Google Fonts in index.css.",
+    "step_2": "Update tailwind.config.js with new font families and color palette.",
+    "step_3": "Customize Shadcn components (Button, Card, Input, Table) to match the 'Tactical' flat design.",
+    "step_4": "Build Layout Shell (Sidebar, Header, Main Content Area).",
+    "step_5": "Implement Dashboard Overview with dense stats.",
+    "step_6": "Implement Product Catalog with virtualized list/grid for performance.",
+    "step_7": "Implement Sync Management with real-time log viewer."
+  }
+}
