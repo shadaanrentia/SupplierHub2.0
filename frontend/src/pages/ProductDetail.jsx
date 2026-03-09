@@ -132,10 +132,10 @@ export default function ProductDetail() {
                 <InfoRow label="SKU" value={product.supplier_sku} mono />
                 <InfoRow label="Brand" value={product.brand} />
                 <InfoRow label="Category" value={product.category} />
-                <InfoRow label="Base Price" value={`$${product.base_price?.toFixed(2)}`} mono />
-                <InfoRow label="Status" value={product.status} />
-                <InfoRow label="Variants" value={product.variants_count} mono />
-                <InfoRow label="Media" value={product.media_count} mono />
+                <InfoRow label="Base Price" value={product.base_price ? `$${product.base_price.toFixed(2)}` : "$0.00"} mono />
+                <InfoRow label="Odoo Status" value={product.odoo_sync_status} />
+                <InfoRow label="Variants" value={product.variants?.length || 0} mono />
+                <InfoRow label="Media" value={product.media?.length || 0} mono />
               </CardContent>
             </Card>
             <Card className="bg-zinc-900/50 border-zinc-800 rounded-sm">
@@ -222,9 +222,23 @@ export default function ProductDetail() {
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
               {product.media.map((m, i) => (
                 <Card key={m.id || i} className="bg-zinc-900/50 border-zinc-800 rounded-sm overflow-hidden">
-                  <img src={m.media_url} alt={m.description || "Product"} className="w-full h-48 object-cover" />
+                  <div className="w-full h-48 bg-zinc-800 flex items-center justify-center relative">
+                    <img 
+                      src={m.url} 
+                      alt={m.description || "Product"} 
+                      className="w-full h-full object-cover" 
+                      onError={(e) => { 
+                        e.target.style.display = 'none'; 
+                        e.target.nextSibling.style.display = 'flex';
+                      }} 
+                    />
+                    <div className="hidden absolute inset-0 flex-col items-center justify-center text-zinc-500 p-2">
+                      <Image className="w-8 h-8 mb-2" strokeWidth={1} />
+                      <p className="text-xs text-center break-all">{m.url?.split('/').pop()}</p>
+                    </div>
+                  </div>
                   <CardContent className="p-2">
-                    <p className="text-xs font-mono text-zinc-500 truncate">{m.color || m.media_type}</p>
+                    <p className="text-xs font-mono text-zinc-500 truncate" title={m.url}>{m.url?.split('/').pop() || m.media_type}</p>
                   </CardContent>
                 </Card>
               ))}
@@ -234,6 +248,14 @@ export default function ProductDetail() {
               <Image className="w-12 h-12 mb-4 text-zinc-700" strokeWidth={1} />
               <p className="font-mono text-sm">NO MEDIA AVAILABLE</p>
               <p className="text-xs mt-1">Sync media from supplier to load product images</p>
+            </div>
+          )}
+          {product.media?.length > 0 && (
+            <div className="mt-4 p-3 bg-amber-900/20 border border-amber-800/50 rounded-sm">
+              <p className="text-xs text-amber-400">
+                <strong>Note:</strong> Some supplier images may not load due to CDN restrictions. 
+                The URLs are stored and can be accessed from authorized systems.
+              </p>
             </div>
           )}
         </TabsContent>

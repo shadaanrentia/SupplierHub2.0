@@ -296,7 +296,7 @@ export default function Products() {
                   </div>
 
                   <div className="flex items-center justify-between text-xs">
-                    <span className="text-zinc-500">{product.variants_count} variants</span>
+                    <span className="text-zinc-500">{product.variant_count} variants</span>
                     <span className={`px-1.5 py-0.5 font-mono border rounded-none ${product.status === "active" ? "bg-emerald-950/50 text-emerald-400 border-emerald-800" : "bg-zinc-800 text-zinc-500 border-zinc-700"}`}>
                       {product.status}
                     </span>
@@ -347,7 +347,7 @@ export default function Products() {
               </div>
               
               <div className="text-center shrink-0 w-20">
-                <p className="text-xs text-zinc-500">{product.variants_count} variants</p>
+                <p className="text-xs text-zinc-500">{product.variant_count} variants</p>
                 <span className={`inline-block px-1.5 py-0.5 text-xs font-mono border rounded-none ${product.status === "active" ? "bg-emerald-950/50 text-emerald-400 border-emerald-800" : "bg-zinc-800 text-zinc-500 border-zinc-700"}`}>
                   {product.status}
                 </span>
