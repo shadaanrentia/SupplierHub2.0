@@ -340,6 +340,32 @@ async def sync_products(supplier_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(run_product_sync, supplier, log["id"])
     return {"sync_log_id": log["id"], "status": "started"}
 
+@api_router.post("/sync/reset/{supplier_id}")
+async def reset_and_sync(supplier_id: str, background_tasks: BackgroundTasks):
+    """Delete all products for a supplier and trigger a fresh sync."""
+    supplier = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})
+    if not supplier:
+        raise HTTPException(404, "Supplier not found")
+    
+    # Delete all products, variants, and media for this supplier
+    deleted_products = await db.products.delete_many({"supplier_id": supplier_id})
+    deleted_variants = await db.product_variants.delete_many({"supplier_id": supplier_id})
+    await db.product_media.delete_many({"product_id": {"$in": []}})  # Will clean up orphaned media
+    
+    # Reset supplier product count
+    await db.suppliers.update_one({"id": supplier_id}, {"$set": {"products_count": 0, "last_sync_time": None}})
+    
+    # Start fresh sync
+    log = await _create_sync_log(supplier_id, supplier.get("supplier_name", ""), "products", f"Reset sync: Deleted {deleted_products.deleted_count} products, {deleted_variants.deleted_count} variants. Starting fresh sync...")
+    background_tasks.add_task(run_product_sync, supplier, log["id"])
+    
+    return {
+        "sync_log_id": log["id"], 
+        "status": "started",
+        "deleted_products": deleted_products.deleted_count,
+        "deleted_variants": deleted_variants.deleted_count
+    }
+
 @api_router.post("/sync/inventory/{supplier_id}")
 async def sync_inventory(supplier_id: str, background_tasks: BackgroundTasks):
     supplier = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})

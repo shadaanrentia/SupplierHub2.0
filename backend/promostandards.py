@@ -206,7 +206,13 @@ class PromoStandardsConnector:
                     for child in ps:
                         tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
                         if tag == 'productId' and child.text:
-                            pid = child.text.strip()
+                            raw_pid = child.text.strip()
+                            # Extract base product ID - some APIs return "SKU(Color,Size,X)" format
+                            # We need just "SKU" for getProduct calls
+                            if '(' in raw_pid:
+                                pid = raw_pid.split('(')[0]
+                            else:
+                                pid = raw_pid
                         elif tag == 'partId' and child.text:
                             part_id = child.text.strip()
                     if pid:
