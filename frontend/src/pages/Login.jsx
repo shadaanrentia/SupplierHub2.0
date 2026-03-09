@@ -26,7 +26,7 @@ export default function Login({ onLogin }) {
       localStorage.setItem("token", res.data.token);
       localStorage.setItem("user", JSON.stringify(res.data.user));
       onLogin(res.data.user);
-      toast.success(`Welcome back, ${res.data.user.name}!`);
+      toast.success(`Welcome back, ${res.data.user.full_name || res.data.user.username}!`);
       navigate("/");
     } catch (e) {
       const msg = e.response?.data?.detail || "Login failed";

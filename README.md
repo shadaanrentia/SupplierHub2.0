@@ -6,17 +6,18 @@ A middleware application that integrates supplier product data using PromoStanda
 
 - **Multi-Supplier Integration**: Connect to multiple PromoStandards-compliant suppliers (ATC/SanMar, S&S Activewear, alphabroder, custom)
 - **Product Data Sync**: Fetch products, variants, inventory, pricing, and media from suppliers
-- **Staging Database**: MongoDB-based staging layer for product curation
+- **Staging Database**: PostgreSQL-based staging layer for product curation
 - **Admin Dashboard**: React-based UI for managing suppliers, products, and sync jobs
 - **User Management**: JWT authentication with admin approval workflow
 - **Odoo Integration**: Push curated products to Odoo ERP (configurable)
 - **Background Sync Jobs**: Async sync operations with progress tracking and cancellation
+- **Warehouse-Specific Inventory**: Filter inventory display by preferred warehouse location
 
 ## Tech Stack
 
 - **Backend**: Python FastAPI
 - **Frontend**: React 18, Tailwind CSS, shadcn/ui
-- **Database**: MongoDB
+- **Database**: PostgreSQL 15
 - **API Integration**: PromoStandards SOAP (raw XML), Odoo XML-RPC
 
 ## Project Structure
@@ -44,7 +45,7 @@ A middleware application that integrates supplier product data using PromoStanda
 
 - Python 3.11+
 - Node.js 18+
-- MongoDB 6.0+
+- PostgreSQL 15+
 - Yarn package manager
 
 ## Installation
@@ -91,9 +92,8 @@ cp .env.example .env
 ### Backend Environment Variables (`backend/.env`)
 
 ```env
-# MongoDB Connection
-MONGO_URL=mongodb://localhost:27017
-DB_NAME=supplierhub
+# PostgreSQL Connection
+DATABASE_URL=postgresql://supplierhub:supplierhub_pass@localhost:5432/supplierhub_db
 
 # JWT Configuration (change in production!)
 JWT_SECRET=your-secret-key-change-in-production

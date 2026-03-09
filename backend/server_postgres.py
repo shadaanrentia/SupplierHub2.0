@@ -66,11 +66,6 @@ def row_to_dict(row):
     for k, v in d.items():
         if isinstance(v, datetime):
             d[k] = v.isoformat()
-        elif isinstance(v, str) and k in ('services', 'warehouse_inventory') and v.startswith('{'):
-            try:
-                d[k] = json.loads(v)
-            except:
-                pass
     return d
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -670,8 +665,6 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
         active_suppliers = await conn.fetchval("SELECT COUNT(*) FROM suppliers WHERE status = 'active'")
         synced_products = await conn.fetchval("SELECT COUNT(*) FROM products WHERE odoo_sync_status = 'synced'")
         pending_products = await conn.fetchval("SELECT COUNT(*) FROM products WHERE odoo_sync_status = 'pending'")
-        total_variants = await conn.fetchval("SELECT COUNT(*) FROM product_variants")
-        active_products = await conn.fetchval("SELECT COUNT(*) FROM products WHERE is_active = TRUE")
         
         return {
             "total_products": total_products,
@@ -679,9 +672,7 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
             "total_suppliers": total_suppliers,
             "active_suppliers": active_suppliers,
             "synced_products": synced_products,
-            "pending_products": pending_products,
-            "total_variants": total_variants,
-            "active_products": active_products
+            "pending_products": pending_products
         }
 
 
