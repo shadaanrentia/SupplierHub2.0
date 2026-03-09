@@ -271,7 +271,7 @@ export default function Settings() {
                     <SelectItem key={wh} value={wh}>{wh}</SelectItem>
                   ))
                 ) : (
-                  <SelectItem value="" disabled>No warehouses available (sync inventory first)</SelectItem>
+                  <SelectItem value="none" disabled>No warehouses available (sync inventory first)</SelectItem>
                 )}
               </SelectContent>
             </Select>
