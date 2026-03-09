@@ -147,6 +147,7 @@ class SettingsUpdate(BaseModel):
     odoo_db: Optional[str] = None
     odoo_username: Optional[str] = None
     odoo_api_key: Optional[str] = None
+    preferred_warehouse: Optional[str] = None  # e.g., "MISSISSAUGA/ON"
 
 
 # ==================== STARTUP ====================
@@ -193,7 +194,8 @@ async def startup():
             "sync_products_interval_hours": 24,
             "sync_inventory_interval_minutes": 30,
             "sync_pricing_interval_hours": 12,
-            "auto_sync_enabled": False
+            "auto_sync_enabled": False,
+            "preferred_warehouse": "MISSISSAUGA/ON"  # Default warehouse
         })
 
     ps_user = os.environ.get('PROMOSTANDARDS_USERNAME')
@@ -551,7 +553,29 @@ async def get_product(product_id: str):
     variants = await db.product_variants.find({"product_id": product_id}, {"_id": 0}).to_list(1000)
     media = await db.product_media.find({"product_id": product_id}, {"_id": 0}).to_list(100)
     supplier = await db.suppliers.find_one({"id": p.get("supplier_id")}, {"_id": 0, "supplier_name": 1})
-    return {**p, "variants": variants, "media": media, "supplier_name": supplier.get("supplier_name") if supplier else "Unknown"}
+    
+    # Get preferred warehouse from settings and filter inventory
+    settings = await db.settings.find_one({"id": "system_settings"}, {"_id": 0, "preferred_warehouse": 1})
+    preferred_warehouse = settings.get("preferred_warehouse", "") if settings else ""
+    
+    # Update variants with warehouse-specific inventory
+    for v in variants:
+        warehouse_inventory = v.get("warehouse_inventory", [])
+        if preferred_warehouse and warehouse_inventory:
+            # Find inventory for preferred warehouse
+            for wh in warehouse_inventory:
+                if wh.get("name") == preferred_warehouse:
+                    v["inventory"] = wh.get("quantity", 0)
+                    v["warehouse_name"] = wh.get("name", "")
+                    break
+    
+    return {
+        **p, 
+        "variants": variants, 
+        "media": media, 
+        "supplier_name": supplier.get("supplier_name") if supplier else "Unknown",
+        "preferred_warehouse": preferred_warehouse
+    }
 
 @api_router.post("/products/{product_id}/select-for-odoo")
 async def toggle_selection(product_id: str, data: ProductSelectRequest):
@@ -1467,10 +1491,20 @@ async def dashboard_stats():
 async def get_settings():
     s = await db.settings.find_one({"id": "system_settings"}, {"_id": 0})
     if not s:
-        return {"id": "system_settings", "odoo_url": "", "odoo_db": "", "odoo_username": "", "odoo_api_key": "", "odoo_connected": False, "sync_products_interval_hours": 24, "sync_inventory_interval_minutes": 30, "sync_pricing_interval_hours": 12, "auto_sync_enabled": False}
+        return {"id": "system_settings", "odoo_url": "", "odoo_db": "", "odoo_username": "", "odoo_api_key": "", "odoo_connected": False, "sync_products_interval_hours": 24, "sync_inventory_interval_minutes": 30, "sync_pricing_interval_hours": 12, "auto_sync_enabled": False, "preferred_warehouse": "MISSISSAUGA/ON"}
     if s.get('odoo_api_key'):
         s['odoo_api_key'] = '***'
     return s
+
+@api_router.get("/settings/warehouses")
+async def get_available_warehouses():
+    """Get list of unique warehouse names from all variants."""
+    warehouses = set()
+    async for variant in db.product_variants.find({"warehouse_inventory": {"$exists": True, "$ne": []}}, {"_id": 0, "warehouse_inventory": 1}):
+        for wh in variant.get("warehouse_inventory", []):
+            if wh.get("name"):
+                warehouses.add(wh["name"])
+    return {"warehouses": sorted(list(warehouses))}
 
 @api_router.put("/settings")
 async def update_settings(data: SettingsUpdate):

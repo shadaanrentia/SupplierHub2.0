@@ -4,7 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Settings as SettingsIcon, Save, Plug, RefreshCw } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Settings as SettingsIcon, Save, Plug, RefreshCw, Warehouse } from "lucide-react";
 import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -14,13 +15,20 @@ export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [warehouses, setWarehouses] = useState([]);
   const [odooForm, setOdooForm] = useState({ odoo_url: "", odoo_db: "", odoo_username: "", odoo_api_key: "" });
   const [syncForm, setSyncForm] = useState({ sync_products_interval_hours: 24, sync_inventory_interval_minutes: 30, sync_pricing_interval_hours: 12, auto_sync_enabled: false });
+  const [warehouseForm, setWarehouseForm] = useState({ preferred_warehouse: "" });
 
   const fetchSettings = useCallback(async () => {
     try {
-      const res = await axios.get(`${API}/settings`);
+      const [settingsRes, warehousesRes] = await Promise.all([
+        axios.get(`${API}/settings`),
+        axios.get(`${API}/settings/warehouses`)
+      ]);
+      const res = settingsRes;
       setSettings(res.data);
+      setWarehouses(warehousesRes.data.warehouses || []);
       setOdooForm({
         odoo_url: res.data.odoo_url || "",
         odoo_db: res.data.odoo_db || "",
@@ -32,6 +40,9 @@ export default function Settings() {
         sync_inventory_interval_minutes: res.data.sync_inventory_interval_minutes || 30,
         sync_pricing_interval_hours: res.data.sync_pricing_interval_hours || 12,
         auto_sync_enabled: res.data.auto_sync_enabled || false,
+      });
+      setWarehouseForm({
+        preferred_warehouse: res.data.preferred_warehouse || "",
       });
     } catch (e) {
       console.error(e);
@@ -64,6 +75,18 @@ export default function Settings() {
     try {
       await axios.put(`${API}/settings`, syncForm);
       toast.success("Sync settings saved");
+    } catch (e) {
+      toast.error("Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveWarehouse = async () => {
+    setSaving(true);
+    try {
+      await axios.put(`${API}/settings`, warehouseForm);
+      toast.success("Warehouse preference saved");
     } catch (e) {
       toast.error("Failed to save");
     } finally {
@@ -224,6 +247,41 @@ export default function Settings() {
               <Save className="w-4 h-4 mr-2" />Save Sync Settings
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Warehouse Preference */}
+      <Card className="bg-zinc-900/50 border-zinc-800 rounded-sm">
+        <CardHeader className="p-4 border-b border-zinc-800/50">
+          <CardTitle className="font-heading text-sm font-bold uppercase text-zinc-400 tracking-wider flex items-center gap-2">
+            <Warehouse className="w-4 h-4" />
+            Inventory Warehouse
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 space-y-4">
+          <p className="text-sm text-zinc-400">Select your preferred warehouse location. Inventory levels will be displayed for this warehouse only.</p>
+          <div className="flex items-center gap-4">
+            <Select value={warehouseForm.preferred_warehouse} onValueChange={(v) => setWarehouseForm({ preferred_warehouse: v })}>
+              <SelectTrigger className="w-64 bg-zinc-950 border-zinc-800 rounded-none" data-testid="warehouse-select">
+                <SelectValue placeholder="Select warehouse..." />
+              </SelectTrigger>
+              <SelectContent className="bg-zinc-900 border-zinc-800">
+                {warehouses.length > 0 ? (
+                  warehouses.map((wh) => (
+                    <SelectItem key={wh} value={wh}>{wh}</SelectItem>
+                  ))
+                ) : (
+                  <SelectItem value="" disabled>No warehouses available (sync inventory first)</SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            <Button onClick={saveWarehouse} disabled={saving} className="bg-blue-600 hover:bg-blue-500 text-white rounded-none" data-testid="save-warehouse-btn">
+              <Save className="w-4 h-4 mr-2" />Save
+            </Button>
+          </div>
+          {warehouseForm.preferred_warehouse && (
+            <p className="text-xs text-emerald-400">Currently showing inventory for: {warehouseForm.preferred_warehouse}</p>
+          )}
         </CardContent>
       </Card>
     </div>

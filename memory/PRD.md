@@ -40,6 +40,11 @@ Build a middleware application that integrates supplier product data using Promo
 - **View Toggle**: Grid/List view toggle on both Products and Product Search pages
 - **Bulk Sync API**: New endpoint `POST /api/sync/products/bulk?sync_type={pricing|inventory|media}` with product_ids in body
 - **Fixed Route Ordering Bug**: Moved bulk sync endpoint before supplier_id route to avoid route conflicts
+- **Warehouse-Specific Inventory Display**:
+  - New setting to select preferred warehouse (Settings page)
+  - Product detail page now shows inventory only for the selected warehouse (default: MISSISSAUGA/ON)
+  - API endpoint `GET /api/settings/warehouses` to fetch available warehouse locations
+  - Fixed inventory sync XML parsing for nested `<Quantity><value>` structure
 
 ### March 9, 2026 - Authentication & User Management
 - **Login Page**: Username/password login with JWT tokens (24h expiration)

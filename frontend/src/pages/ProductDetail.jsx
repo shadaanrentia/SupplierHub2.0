@@ -174,6 +174,13 @@ export default function ProductDetail() {
             <CardContent className="p-0">
               {product.variants?.length > 0 ? (
                 <div className="overflow-x-auto">
+                  {product.preferred_warehouse && (
+                    <div className="p-3 border-b border-zinc-800/50 bg-zinc-900/80">
+                      <p className="text-xs text-zinc-400">
+                        Showing inventory for: <span className="text-emerald-400 font-mono">{product.preferred_warehouse}</span>
+                      </p>
+                    </div>
+                  )}
                   <table className="w-full" data-testid="variants-table">
                     <thead>
                       <tr className="border-b border-zinc-800 bg-zinc-900/80">
@@ -181,7 +188,9 @@ export default function ProductDetail() {
                         <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Color</th>
                         <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Size</th>
                         <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Price</th>
-                        <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Inventory</th>
+                        <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">
+                          {product.preferred_warehouse ? `Inventory (${product.preferred_warehouse.split('/')[0]})` : 'Inventory'}
+                        </th>
                         <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Lead Time</th>
                       </tr>
                     </thead>
