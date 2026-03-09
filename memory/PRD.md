@@ -4,11 +4,11 @@
 Build a middleware application that integrates supplier product data using PromoStandards SOAP APIs and synchronizes selected products into Odoo ERP. Central staging database, admin curation interface, automated sync jobs.
 
 ## Architecture
-- **Backend**: FastAPI (Python) with MongoDB
+- **Backend**: FastAPI (Python) with PostgreSQL
 - **Frontend**: React with Shadcn UI, Tailwind CSS, dark theme
-- **Database**: MongoDB (suppliers, products, product_variants, product_media, sync_logs, settings)
+- **Database**: PostgreSQL 15 (users, suppliers, products, product_variants, product_media, sync_logs, settings)
 - **SOAP Client**: Raw XML over HTTP (no WSDL dependency - bypasses WAF blocking)
-- **Flow**: PromoStandards SOAP APIs → Raw XML Connector → MongoDB Staging → Admin Curation → Odoo ERP (mock mode)
+- **Flow**: PromoStandards SOAP APIs → Raw XML Connector → PostgreSQL Staging → Admin Curation → Odoo ERP (mock mode)
 
 ## User Personas
 - **Admin**: Manages suppliers, curates products, triggers syncs, configures Odoo
@@ -26,7 +26,18 @@ Build a middleware application that integrates supplier product data using Promo
 
 ## What's Been Implemented
 
-### December 2025 - Product Search & Individual Sync Features
+### December 2025 - PostgreSQL Migration & Final Features
+- **Database Migration**: Migrated from MongoDB to PostgreSQL
+  - All 572 products, 18,825 variants, 2 suppliers successfully migrated
+  - New schema with proper foreign keys and indexes
+  - Migration script: `/app/backend/migrate_to_postgres.py`
+  - Using asyncpg for async PostgreSQL operations
+- **Axios Interceptor**: Added authentication interceptor for automatic token handling
+  - `/app/frontend/src/lib/axios.js` - auto-attaches Bearer token to all requests
+  - Auto-redirects to login on 401 errors
+- **Bug Fixes**:
+  - Fixed Dashboard Total Variants count (now shows 18,825)
+  - Fixed Welcome toast to show full_name correctly
 - **Product Search Page**: New page at `/product-search` for searching products within a specific supplier
   - Supplier dropdown selector (required field)
   - Product name search input
@@ -73,15 +84,16 @@ Build a middleware application that integrates supplier product data using Promo
 - Full FastAPI backend with all CRUD endpoints for suppliers, products, sync, odoo, dashboard, settings
 - PromoStandards SOAP connector for Product Data 2.0, Inventory 2.0, Pricing 1.0, Media Content 1.1
 - Odoo XML-RPC integration layer (mock mode, ready for real credentials)
-- MongoDB collections with proper indexing
-- React admin dashboard with: Dashboard, Products, Product Detail, Suppliers, Sync Management, Settings pages
+- PostgreSQL database with proper schema, foreign keys, and indexes
+- React admin dashboard with: Dashboard, Products, Product Detail, Product Search, Suppliers, Sync Management, Settings, Users pages
 - Product filtering by supplier, category, brand, price, search, Odoo selection status
 - Product select-for-Odoo toggle (individual and bulk)
 - Sync trigger UI for products/inventory/pricing/media
+- Warehouse-specific inventory display (default: MISSISSAUGA/ON)
 - CDN fallback for product images when SOAP Media API authentication fails
 
 ## Configured Suppliers
-1. **ATC / SanMar Canada** - Working (212 products synced)
+1. **ATC / SanMar Canada** - Working (572 products synced)
    - Endpoint Style: `atc`
    - Base URL: https://edi.atc-apparel.com
    - Status: Active, connection successful
@@ -93,20 +105,19 @@ Build a middleware application that integrates supplier product data using Promo
    - **Resolution**: User needs to contact S&S to whitelist server IP
 
 ## Testing Results
-### December 2025 (Latest)
-- Backend API: 100% pass (15/15 new tests for Product Search & Individual Sync)
-- Frontend UI: 100% pass (all new features working)
-- Total products in database: 572
+### December 2025 (PostgreSQL Migration)
+- Backend API: 100% pass (21/21 tests)
+- Frontend UI: 100% pass (all features working)
+- Database: PostgreSQL with 572 products, 18,825 variants, 2 suppliers
 
-### March 8, 2026 (Previous)
+### Previous (MongoDB era)
 - Backend API: 100% pass (23/23 tests)
 - Frontend UI: 90% pass
 - Integration: Working (ATC sync successful, S&S blocked by WAF)
 
 ## Known Issues
 1. **S&S Activewear 403 Block**: Their server blocks requests from our IP - requires IP whitelisting
-2. **Product Names**: Some products show "Array" due to SOAP response parsing (fix applied, needs re-sync)
-3. **Odoo Integration**: Mocked - awaiting user credentials
+2. **Odoo Integration**: Mocked - awaiting user credentials
 4. ~~**Inventory Sync Parsing Bug**: Fixed - was not parsing nested `<Quantity><value>` XML structure correctly~~
 
 ## Prioritized Backlog
