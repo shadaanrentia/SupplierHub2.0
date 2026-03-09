@@ -875,28 +875,43 @@ async def run_pricing_sync(supplier: dict, sync_log_id: str):
                 
             try:
                 r = connector.get_pricing(product['supplier_sku'])
-                if r['success']:
-                    price_updated = False
+                if r['success'] and r.get('pricing'):
+                    # Update variant prices
                     for pi in r.get('pricing', []):
                         prices = pi.get('prices', [])
-                        if prices:
-                            result = await db.product_variants.update_one(
+                        if prices and prices[0].get('price', 0) > 0:
+                            await db.product_variants.update_one(
                                 {"product_id": product['id'], "variant_sku": pi['part_id']}, 
                                 {"$set": {"price": prices[0].get('price', 0), "last_synced": utc_now()}}
                             )
-                            if result.modified_count > 0:
-                                price_updated = True
                     
-                    # Update product base price from first variant with price
-                    fv = await db.product_variants.find_one({"product_id": product['id'], "price": {"$gt": 0}}, {"_id": 0, "price": 1})
+                    # Always try to update product base_price from first variant with price
+                    fv = await db.product_variants.find_one(
+                        {"product_id": product['id'], "price": {"$gt": 0}}, 
+                        {"_id": 0, "price": 1},
+                        sort=[("price", 1)]  # Get lowest price as base
+                    )
                     if fv and fv.get('price'):
-                        await db.products.update_one({"id": product['id']}, {"$set": {"base_price": fv['price'], "updated_at": utc_now()}})
-                        price_updated = True
-                    
-                    if price_updated:
+                        await db.products.update_one(
+                            {"id": product['id']}, 
+                            {"$set": {"base_price": fv['price'], "updated_at": utc_now()}}
+                        )
                         updated += 1
                 else:
-                    errors += 1
+                    # No pricing data, but still try to set base_price from existing variants
+                    fv = await db.product_variants.find_one(
+                        {"product_id": product['id'], "price": {"$gt": 0}}, 
+                        {"_id": 0, "price": 1},
+                        sort=[("price", 1)]
+                    )
+                    if fv and fv.get('price'):
+                        current = await db.products.find_one({"id": product['id']}, {"_id": 0, "base_price": 1})
+                        if not current.get('base_price') or current['base_price'] == 0:
+                            await db.products.update_one(
+                                {"id": product['id']}, 
+                                {"$set": {"base_price": fv['price'], "updated_at": utc_now()}}
+                            )
+                            updated += 1
             except Exception as e:
                 logger.error(f"Pricing error for {product['supplier_sku']}: {e}")
                 errors += 1

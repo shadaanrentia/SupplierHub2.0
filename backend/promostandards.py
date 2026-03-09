@@ -389,35 +389,40 @@ class PromoStandardsConnector:
             body = _soap_call(endpoint, 'GetConfigurationAndPricing', body_xml)
             pricing = []
 
-            current_part = None
-            for el in body.iter():
-                tag = el.tag.split('}')[-1] if '}' in el.tag else el.tag
+            # Find all Part elements
+            for part_el in body.iter():
+                tag = part_el.tag.split('}')[-1] if '}' in part_el.tag else part_el.tag
                 if tag == 'Part':
-                    if current_part and current_part['part_id']:
-                        pricing.append(current_part)
-                    current_part = {'part_id': '', 'prices': []}
-                elif tag == 'partId' and el.text and current_part is not None:
-                    current_part['part_id'] = el.text.strip()
-                elif tag == 'PartPrice' and current_part is not None:
-                    price = {'min_quantity': 0, 'price': 0.0, 'uom': ''}
-                    for child in el.iter():
+                    part_data = {'part_id': '', 'prices': []}
+                    
+                    # Get direct children of Part
+                    for child in part_el:
                         ctag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-                        if ctag == 'minQuantity' and child.text:
-                            try:
-                                price['min_quantity'] = int(float(child.text.strip()))
-                            except ValueError:
-                                pass
-                        elif ctag == 'price' and child.text:
-                            try:
-                                price['price'] = float(child.text.strip())
-                            except ValueError:
-                                pass
-                        elif ctag == 'priceUom' and child.text:
-                            price['uom'] = child.text.strip()
-                    current_part['prices'].append(price)
-
-            if current_part and current_part['part_id']:
-                pricing.append(current_part)
+                        if ctag == 'partId' and child.text:
+                            part_data['part_id'] = child.text.strip()
+                        elif ctag == 'PartPriceArray':
+                            # Iterate over PartPrice elements
+                            for pp in child:
+                                price = {'min_quantity': 0, 'price': 0.0, 'uom': ''}
+                                for pchild in pp:
+                                    ptag = pchild.tag.split('}')[-1] if '}' in pchild.tag else pchild.tag
+                                    if ptag == 'minQuantity' and pchild.text:
+                                        try:
+                                            price['min_quantity'] = int(float(pchild.text.strip()))
+                                        except ValueError:
+                                            pass
+                                    elif ptag == 'price' and pchild.text:
+                                        try:
+                                            price['price'] = float(pchild.text.strip())
+                                        except ValueError:
+                                            pass
+                                    elif ptag == 'priceUom' and pchild.text:
+                                        price['uom'] = pchild.text.strip()
+                                if price['price'] > 0:
+                                    part_data['prices'].append(price)
+                    
+                    if part_data['part_id'] and part_data['prices']:
+                        pricing.append(part_data)
 
             return {'success': True, 'pricing': pricing}
         except (ConnectionError, ValueError) as e:
