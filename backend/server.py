@@ -804,52 +804,123 @@ async def run_inventory_sync(supplier: dict, sync_log_id: str):
     try:
         from promostandards import PromoStandardsConnector
         connector = PromoStandardsConnector(supplier)
-        products = await db.products.find({"supplier_id": supplier["id"]}, {"_id": 0, "id": 1, "supplier_sku": 1}).to_list(1000)
+        products = await db.products.find({"supplier_id": supplier["id"]}, {"_id": 0, "id": 1, "supplier_sku": 1}).to_list(5000)
+        total = len(products)
         processed, updated, errors = 0, 0, 0
+        
+        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"message": f"Fetching inventory for {total} products..."}})
+        
         for product in products:
+            # Check for cancellation
+            if processed % 20 == 0 and await check_sync_cancelled(sync_log_id):
+                logger.info(f"Inventory sync {sync_log_id} cancelled at {processed}/{total}")
+                return
+                
             try:
                 r = connector.get_inventory(product['supplier_sku'])
                 if r['success']:
+                    inv_count = 0
                     for inv in r.get('inventory', []):
-                        await db.product_variants.update_one(
+                        result = await db.product_variants.update_one(
                             {"product_id": product['id'], "variant_sku": inv.get('part_id', '')},
                             {"$set": {"inventory": inv.get('quantity_available', 0), "warehouse_inventory": inv.get('warehouses', []), "last_synced": utc_now()}}
                         )
-                    updated += 1
+                        if result.modified_count > 0:
+                            inv_count += 1
+                    if inv_count > 0:
+                        updated += 1
                 else:
                     errors += 1
-            except Exception:
+            except Exception as e:
+                logger.error(f"Inventory error for {product['supplier_sku']}: {e}")
                 errors += 1
             processed += 1
-        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"status": "completed", "completed_at": utc_now(), "products_processed": processed, "products_updated": updated, "errors_count": errors, "message": f"Inventory: {updated}/{processed} updated"}})
+            
+            # Update progress every 10 products
+            if processed % 10 == 0:
+                await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {
+                    "products_processed": processed,
+                    "products_updated": updated,
+                    "errors_count": errors,
+                    "message": f"Processing {processed}/{total}..."
+                }})
+        
+        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {
+            "status": "completed", 
+            "completed_at": utc_now(), 
+            "products_processed": processed, 
+            "products_updated": updated, 
+            "errors_count": errors, 
+            "message": f"Inventory: {updated}/{processed} products with inventory updated"
+        }})
     except Exception as e:
+        logger.error(f"Inventory sync failed: {e}")
         await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"status": "failed", "completed_at": utc_now(), "message": str(e)}})
 
 async def run_pricing_sync(supplier: dict, sync_log_id: str):
     try:
         from promostandards import PromoStandardsConnector
         connector = PromoStandardsConnector(supplier)
-        products = await db.products.find({"supplier_id": supplier["id"]}, {"_id": 0, "id": 1, "supplier_sku": 1}).to_list(1000)
+        products = await db.products.find({"supplier_id": supplier["id"]}, {"_id": 0, "id": 1, "supplier_sku": 1}).to_list(5000)
+        total = len(products)
         processed, updated, errors = 0, 0, 0
+        
+        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"message": f"Fetching pricing for {total} products..."}})
+        
         for product in products:
+            # Check for cancellation
+            if processed % 20 == 0 and await check_sync_cancelled(sync_log_id):
+                logger.info(f"Pricing sync {sync_log_id} cancelled at {processed}/{total}")
+                return
+                
             try:
                 r = connector.get_pricing(product['supplier_sku'])
                 if r['success']:
+                    price_updated = False
                     for pi in r.get('pricing', []):
                         prices = pi.get('prices', [])
                         if prices:
-                            await db.product_variants.update_one({"product_id": product['id'], "variant_sku": pi['part_id']}, {"$set": {"price": prices[0].get('price', 0), "last_synced": utc_now()}})
-                    fv = await db.product_variants.find_one({"product_id": product['id']}, {"_id": 0, "price": 1})
+                            result = await db.product_variants.update_one(
+                                {"product_id": product['id'], "variant_sku": pi['part_id']}, 
+                                {"$set": {"price": prices[0].get('price', 0), "last_synced": utc_now()}}
+                            )
+                            if result.modified_count > 0:
+                                price_updated = True
+                    
+                    # Update product base price from first variant with price
+                    fv = await db.product_variants.find_one({"product_id": product['id'], "price": {"$gt": 0}}, {"_id": 0, "price": 1})
                     if fv and fv.get('price'):
                         await db.products.update_one({"id": product['id']}, {"$set": {"base_price": fv['price'], "updated_at": utc_now()}})
-                    updated += 1
+                        price_updated = True
+                    
+                    if price_updated:
+                        updated += 1
                 else:
                     errors += 1
-            except Exception:
+            except Exception as e:
+                logger.error(f"Pricing error for {product['supplier_sku']}: {e}")
                 errors += 1
             processed += 1
-        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"status": "completed", "completed_at": utc_now(), "products_processed": processed, "products_updated": updated, "errors_count": errors, "message": f"Pricing: {updated}/{processed} updated"}})
+            
+            # Update progress every 10 products
+            if processed % 10 == 0:
+                await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {
+                    "products_processed": processed,
+                    "products_updated": updated,
+                    "errors_count": errors,
+                    "message": f"Processing {processed}/{total}..."
+                }})
+        
+        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {
+            "status": "completed", 
+            "completed_at": utc_now(), 
+            "products_processed": processed, 
+            "products_updated": updated, 
+            "errors_count": errors, 
+            "message": f"Pricing: {updated}/{processed} products with pricing updated"
+        }})
     except Exception as e:
+        logger.error(f"Pricing sync failed: {e}")
         await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"status": "failed", "completed_at": utc_now(), "message": str(e)}})
 
 async def run_media_sync(supplier: dict, sync_log_id: str):
