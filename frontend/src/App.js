@@ -6,6 +6,7 @@ import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import Products from "@/pages/Products";
 import ProductDetail from "@/pages/ProductDetail";
+import ProductSearch from "@/pages/ProductSearch";
 import Suppliers from "@/pages/Suppliers";
 import SyncManagement from "@/pages/SyncManagement";
 import Settings from "@/pages/Settings";
@@ -60,6 +61,7 @@ function App() {
               <Route path="/" element={<Dashboard />} />
               <Route path="/products" element={<Products />} />
               <Route path="/products/:id" element={<ProductDetail />} />
+              <Route path="/product-search" element={<ProductSearch />} />
               <Route path="/suppliers" element={<Suppliers />} />
               <Route path="/sync" element={<SyncManagement />} />
               <Route path="/settings" element={<Settings />} />

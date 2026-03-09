@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { LayoutDashboard, Package, Truck, RefreshCw, Settings, ChevronLeft, ChevronRight, Layers, Users, LogOut, User } from "lucide-react";
+import { LayoutDashboard, Package, Truck, RefreshCw, Settings, ChevronLeft, ChevronRight, Layers, Users, LogOut, User, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -8,6 +8,7 @@ const getNavItems = (isAdmin) => {
   const items = [
     { path: "/", label: "Dashboard", icon: LayoutDashboard },
     { path: "/products", label: "Products", icon: Package },
+    { path: "/product-search", label: "Product Search", icon: Search },
     { path: "/suppliers", label: "Suppliers", icon: Truck },
     { path: "/sync", label: "Sync Jobs", icon: RefreshCw },
     { path: "/settings", label: "Settings", icon: Settings },

@@ -584,6 +584,32 @@ async def _create_sync_log(supplier_id, supplier_name, sync_type, message):
     log.pop('_id', None)
     return log
 
+# Bulk sync endpoint - MUST be before /sync/products/{supplier_id} to avoid route conflict
+@api_router.post("/sync/products/bulk")
+async def sync_bulk_products(product_ids: List[str], sync_type: str = Query(..., regex="^(pricing|inventory|media)$")):
+    """Sync pricing, inventory, or media for multiple products."""
+    results = {"success": 0, "failed": 0, "errors": []}
+    
+    for product_id in product_ids[:50]:  # Limit to 50 products
+        try:
+            if sync_type == "pricing":
+                r = await _sync_product_pricing_internal(product_id)
+            elif sync_type == "inventory":
+                r = await _sync_product_inventory_internal(product_id)
+            else:
+                r = await _sync_product_media_internal(product_id)
+            
+            if r.get("success"):
+                results["success"] += 1
+            else:
+                results["failed"] += 1
+                results["errors"].append(f"{product_id}: {r.get('message', 'Unknown error')}")
+        except Exception as e:
+            results["failed"] += 1
+            results["errors"].append(f"{product_id}: {str(e)}")
+    
+    return results
+
 @api_router.post("/sync/products/{supplier_id}")
 async def sync_products(supplier_id: str, background_tasks: BackgroundTasks, limit: int = Query(100, ge=1, le=5000)):
     """Sync products from supplier. Default limit is 100, max 5000. Use limit=5000 for full sync."""
@@ -647,6 +673,283 @@ async def sync_media(supplier_id: str, background_tasks: BackgroundTasks):
     log = await _create_sync_log(supplier_id, supplier.get("supplier_name", ""), "media", "Media sync started")
     background_tasks.add_task(run_media_sync, supplier, log["id"])
     return {"sync_log_id": log["id"], "status": "started"}
+
+
+# ==================== INDIVIDUAL PRODUCT SYNC ====================
+# Internal helper functions for bulk sync (return dict, don't raise HTTPException)
+async def _sync_product_pricing_internal(product_id: str) -> dict:
+    """Internal: Sync pricing for a single product, returns dict."""
+    product = await db.products.find_one({"id": product_id}, {"_id": 0})
+    if not product:
+        return {"success": False, "message": "Product not found"}
+    
+    supplier = await db.suppliers.find_one({"id": product["supplier_id"]}, {"_id": 0})
+    if not supplier:
+        return {"success": False, "message": "Supplier not found"}
+    
+    try:
+        from promostandards import PromoStandardsConnector
+        connector = PromoStandardsConnector(supplier)
+        result = connector.get_pricing(product['supplier_sku'])
+        
+        if result['success'] and result.get('pricing'):
+            updated_variants = 0
+            for pi in result.get('pricing', []):
+                prices = pi.get('prices', [])
+                if prices and prices[0].get('price', 0) > 0:
+                    r = await db.product_variants.update_one(
+                        {"product_id": product_id, "variant_sku": pi['part_id']},
+                        {"$set": {"price": prices[0]['price'], "last_synced": utc_now()}}
+                    )
+                    if r.modified_count > 0:
+                        updated_variants += 1
+            
+            fv = await db.product_variants.find_one(
+                {"product_id": product_id, "price": {"$gt": 0}},
+                {"_id": 0, "price": 1},
+                sort=[("price", 1)]
+            )
+            if fv:
+                await db.products.update_one(
+                    {"id": product_id},
+                    {"$set": {"base_price": fv['price'], "updated_at": utc_now()}}
+                )
+            
+            return {"success": True, "message": f"Updated pricing for {updated_variants} variants", "variants_updated": updated_variants}
+        else:
+            return {"success": False, "message": result.get('error', 'No pricing data available')}
+    except Exception as e:
+        logger.error(f"Product pricing sync error: {e}")
+        return {"success": False, "message": str(e)}
+
+async def _sync_product_inventory_internal(product_id: str) -> dict:
+    """Internal: Sync inventory for a single product, returns dict."""
+    product = await db.products.find_one({"id": product_id}, {"_id": 0})
+    if not product:
+        return {"success": False, "message": "Product not found"}
+    
+    supplier = await db.suppliers.find_one({"id": product["supplier_id"]}, {"_id": 0})
+    if not supplier:
+        return {"success": False, "message": "Supplier not found"}
+    
+    try:
+        from promostandards import PromoStandardsConnector
+        connector = PromoStandardsConnector(supplier)
+        result = connector.get_inventory(product['supplier_sku'])
+        
+        if result['success']:
+            updated_variants = 0
+            for inv in result.get('inventory', []):
+                r = await db.product_variants.update_one(
+                    {"product_id": product_id, "variant_sku": inv.get('part_id', '')},
+                    {"$set": {"inventory": inv.get('quantity_available', 0), "warehouse_inventory": inv.get('warehouses', []), "last_synced": utc_now()}}
+                )
+                if r.modified_count > 0:
+                    updated_variants += 1
+            
+            return {"success": True, "message": f"Updated inventory for {updated_variants} variants", "variants_updated": updated_variants}
+        else:
+            return {"success": False, "message": result.get('error', 'No inventory data available')}
+    except Exception as e:
+        logger.error(f"Product inventory sync error: {e}")
+        return {"success": False, "message": str(e)}
+
+async def _sync_product_media_internal(product_id: str) -> dict:
+    """Internal: Sync media for a single product, returns dict."""
+    product = await db.products.find_one({"id": product_id}, {"_id": 0})
+    if not product:
+        return {"success": False, "message": "Product not found"}
+    
+    supplier = await db.suppliers.find_one({"id": product["supplier_id"]}, {"_id": 0})
+    if not supplier:
+        return {"success": False, "message": "Supplier not found"}
+    
+    try:
+        from promostandards import PromoStandardsConnector
+        connector = PromoStandardsConnector(supplier)
+        result = connector.get_media(product['supplier_sku'])
+        
+        media_added = 0
+        if result['success'] and result.get('media'):
+            await db.product_media.delete_many({"product_id": product_id})
+            
+            for m in result.get('media', []):
+                await db.product_media.insert_one({
+                    "id": new_id(),
+                    "product_id": product_id,
+                    "media_url": m.get('url', ''),
+                    "media_type": m.get('type', 'image'),
+                    "is_primary": m.get('is_primary', False),
+                    "created_at": utc_now()
+                })
+                media_added += 1
+            
+            primary = await db.product_media.find_one({"product_id": product_id, "is_primary": True}, {"_id": 0})
+            if primary:
+                await db.products.update_one({"id": product_id}, {"$set": {"thumbnail_url": primary['media_url'], "media_count": media_added, "updated_at": utc_now()}})
+            elif media_added > 0:
+                first = await db.product_media.find_one({"product_id": product_id}, {"_id": 0})
+                if first:
+                    await db.products.update_one({"id": product_id}, {"$set": {"thumbnail_url": first['media_url'], "media_count": media_added, "updated_at": utc_now()}})
+            
+            return {"success": True, "message": f"Added {media_added} media items", "media_added": media_added}
+        else:
+            cdn_url = f"https://cdnm.sanmar.com/imglib/mresjpg/{product['supplier_sku']}_fm.jpg"
+            await db.product_media.delete_many({"product_id": product_id})
+            await db.product_media.insert_one({
+                "id": new_id(),
+                "product_id": product_id,
+                "media_url": cdn_url,
+                "media_type": "image",
+                "is_primary": True,
+                "created_at": utc_now()
+            })
+            await db.products.update_one({"id": product_id}, {"$set": {"thumbnail_url": cdn_url, "media_count": 1, "updated_at": utc_now()}})
+            return {"success": True, "message": "Added CDN fallback image", "media_added": 1, "fallback": True}
+    except Exception as e:
+        logger.error(f"Product media sync error: {e}")
+        return {"success": False, "message": str(e)}
+
+@api_router.post("/sync/product/{product_id}/pricing")
+async def sync_product_pricing(product_id: str):
+    """Sync pricing for a single product."""
+    product = await db.products.find_one({"id": product_id}, {"_id": 0})
+    if not product:
+        raise HTTPException(404, "Product not found")
+    
+    supplier = await db.suppliers.find_one({"id": product["supplier_id"]}, {"_id": 0})
+    if not supplier:
+        raise HTTPException(404, "Supplier not found")
+    
+    try:
+        from promostandards import PromoStandardsConnector
+        connector = PromoStandardsConnector(supplier)
+        result = connector.get_pricing(product['supplier_sku'])
+        
+        if result['success'] and result.get('pricing'):
+            updated_variants = 0
+            for pi in result.get('pricing', []):
+                prices = pi.get('prices', [])
+                if prices and prices[0].get('price', 0) > 0:
+                    r = await db.product_variants.update_one(
+                        {"product_id": product_id, "variant_sku": pi['part_id']},
+                        {"$set": {"price": prices[0]['price'], "last_synced": utc_now()}}
+                    )
+                    if r.modified_count > 0:
+                        updated_variants += 1
+            
+            # Update product base_price
+            fv = await db.product_variants.find_one(
+                {"product_id": product_id, "price": {"$gt": 0}},
+                {"_id": 0, "price": 1},
+                sort=[("price", 1)]
+            )
+            if fv:
+                await db.products.update_one(
+                    {"id": product_id},
+                    {"$set": {"base_price": fv['price'], "updated_at": utc_now()}}
+                )
+            
+            return {"success": True, "message": f"Updated pricing for {updated_variants} variants", "variants_updated": updated_variants}
+        else:
+            return {"success": False, "message": result.get('error', 'No pricing data available')}
+    except Exception as e:
+        logger.error(f"Product pricing sync error: {e}")
+        return {"success": False, "message": str(e)}
+
+@api_router.post("/sync/product/{product_id}/inventory")
+async def sync_product_inventory(product_id: str):
+    """Sync inventory for a single product."""
+    product = await db.products.find_one({"id": product_id}, {"_id": 0})
+    if not product:
+        raise HTTPException(404, "Product not found")
+    
+    supplier = await db.suppliers.find_one({"id": product["supplier_id"]}, {"_id": 0})
+    if not supplier:
+        raise HTTPException(404, "Supplier not found")
+    
+    try:
+        from promostandards import PromoStandardsConnector
+        connector = PromoStandardsConnector(supplier)
+        result = connector.get_inventory(product['supplier_sku'])
+        
+        if result['success']:
+            updated_variants = 0
+            for inv in result.get('inventory', []):
+                r = await db.product_variants.update_one(
+                    {"product_id": product_id, "variant_sku": inv.get('part_id', '')},
+                    {"$set": {"inventory": inv.get('quantity_available', 0), "warehouse_inventory": inv.get('warehouses', []), "last_synced": utc_now()}}
+                )
+                if r.modified_count > 0:
+                    updated_variants += 1
+            
+            return {"success": True, "message": f"Updated inventory for {updated_variants} variants", "variants_updated": updated_variants}
+        else:
+            return {"success": False, "message": result.get('error', 'No inventory data available')}
+    except Exception as e:
+        logger.error(f"Product inventory sync error: {e}")
+        return {"success": False, "message": str(e)}
+
+@api_router.post("/sync/product/{product_id}/media")
+async def sync_product_media(product_id: str):
+    """Sync media for a single product."""
+    product = await db.products.find_one({"id": product_id}, {"_id": 0})
+    if not product:
+        raise HTTPException(404, "Product not found")
+    
+    supplier = await db.suppliers.find_one({"id": product["supplier_id"]}, {"_id": 0})
+    if not supplier:
+        raise HTTPException(404, "Supplier not found")
+    
+    try:
+        from promostandards import PromoStandardsConnector
+        connector = PromoStandardsConnector(supplier)
+        result = connector.get_media(product['supplier_sku'])
+        
+        media_added = 0
+        if result['success'] and result.get('media'):
+            # Delete existing media for this product
+            await db.product_media.delete_many({"product_id": product_id})
+            
+            for m in result.get('media', []):
+                await db.product_media.insert_one({
+                    "id": new_id(),
+                    "product_id": product_id,
+                    "media_url": m.get('url', ''),
+                    "media_type": m.get('type', 'image'),
+                    "is_primary": m.get('is_primary', False),
+                    "created_at": utc_now()
+                })
+                media_added += 1
+            
+            # Update product thumbnail
+            primary = await db.product_media.find_one({"product_id": product_id, "is_primary": True}, {"_id": 0})
+            if primary:
+                await db.products.update_one({"id": product_id}, {"$set": {"thumbnail_url": primary['media_url'], "media_count": media_added, "updated_at": utc_now()}})
+            elif media_added > 0:
+                first = await db.product_media.find_one({"product_id": product_id}, {"_id": 0})
+                if first:
+                    await db.products.update_one({"id": product_id}, {"$set": {"thumbnail_url": first['media_url'], "media_count": media_added, "updated_at": utc_now()}})
+            
+            return {"success": True, "message": f"Added {media_added} media items", "media_added": media_added}
+        else:
+            # Try CDN fallback
+            cdn_url = f"https://cdnm.sanmar.com/imglib/mresjpg/{product['supplier_sku']}_fm.jpg"
+            await db.product_media.delete_many({"product_id": product_id})
+            await db.product_media.insert_one({
+                "id": new_id(),
+                "product_id": product_id,
+                "media_url": cdn_url,
+                "media_type": "image",
+                "is_primary": True,
+                "created_at": utc_now()
+            })
+            await db.products.update_one({"id": product_id}, {"$set": {"thumbnail_url": cdn_url, "media_count": 1, "updated_at": utc_now()}})
+            return {"success": True, "message": "Added CDN fallback image", "media_added": 1, "fallback": True}
+    except Exception as e:
+        logger.error(f"Product media sync error: {e}")
+        return {"success": False, "message": str(e)}
+
 
 @api_router.get("/sync/logs")
 async def get_sync_logs(supplier_id: Optional[str] = None, sync_type: Optional[str] = None, status: Optional[str] = None, limit: int = Query(50, ge=1, le=200)):

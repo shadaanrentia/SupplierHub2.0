@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 
 class SupplierHubAPITester:
-    def __init__(self, base_url="https://supplier-bridge-7.preview.emergentagent.com/api"):
+    def __init__(self, base_url="https://erp-curator.preview.emergentagent.com/api"):
         self.base_url = base_url
         self.tests_run = 0
         self.tests_passed = 0
