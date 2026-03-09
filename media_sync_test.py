@@ -3,7 +3,7 @@ import requests
 import json
 import sys
 
-API_BASE = "https://erp-curator.preview.emergentagent.com/api"
+API_BASE = "https://product-curator-4.preview.emergentagent.com/api"
 
 def test_media_sync_functionality():
     """Test specific media sync features for iteration 2"""

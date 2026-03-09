@@ -7,6 +7,7 @@ import logging
 import requests
 from lxml import etree
 from typing import Dict, List, Optional
+from xml.sax.saxutils import escape as xml_escape
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,11 @@ class PromoStandardsConnector:
         self.services = supplier_config.get('services', {})
         self.endpoint_style = supplier_config.get('endpoint_style', '')
         self.base_url = supplier_config.get('api_base_url', '')
+        
+        # XML-escaped versions for use in SOAP requests
+        self._safe_account_id = xml_escape(self.account_id)
+        self._safe_password = xml_escape(self.password)
+        self._safe_media_password = xml_escape(self.media_password)
 
         # Auto-generate endpoints if not explicitly set
         if not self.services and self.base_url and self.endpoint_style:
@@ -157,8 +163,8 @@ class PromoStandardsConnector:
             endpoint = self._get_endpoint('product_data')
             body_xml = f'''<ns:GetProductSellableRequest xmlns:ns="{NS['pd']}">
               <ns:wsVersion>2.0.0</ns:wsVersion>
-              <ns:id>{self.account_id}</ns:id>
-              <ns:password>{self.password}</ns:password>
+              <ns:id>{self._safe_account_id}</ns:id>
+              <ns:password>{self._safe_password}</ns:password>
               <ns:localizationCountry>US</ns:localizationCountry>
               <ns:localizationLanguage>en</ns:localizationLanguage>
               <ns:productId>ALL</ns:productId>
@@ -187,8 +193,8 @@ class PromoStandardsConnector:
             endpoint = self._get_endpoint('product_data')
             body_xml = f'''<ns:GetProductSellableRequest xmlns:ns="{NS['pd']}">
               <ns:wsVersion>2.0.0</ns:wsVersion>
-              <ns:id>{self.account_id}</ns:id>
-              <ns:password>{self.password}</ns:password>
+              <ns:id>{self._safe_account_id}</ns:id>
+              <ns:password>{self._safe_password}</ns:password>
               <ns:localizationCountry>US</ns:localizationCountry>
               <ns:localizationLanguage>en</ns:localizationLanguage>
               <ns:productId>ALL</ns:productId>
@@ -229,13 +235,14 @@ class PromoStandardsConnector:
     def get_product(self, product_id: str) -> dict:
         try:
             endpoint = self._get_endpoint('product_data')
+            safe_product_id = xml_escape(product_id)
             body_xml = f'''<ns:GetProductRequest xmlns:ns="{NS['pd']}">
               <ns:wsVersion>2.0.0</ns:wsVersion>
-              <ns:id>{self.account_id}</ns:id>
-              <ns:password>{self.password}</ns:password>
+              <ns:id>{self._safe_account_id}</ns:id>
+              <ns:password>{self._safe_password}</ns:password>
               <ns:localizationCountry>US</ns:localizationCountry>
               <ns:localizationLanguage>en</ns:localizationLanguage>
-              <ns:productId>{product_id}</ns:productId>
+              <ns:productId>{safe_product_id}</ns:productId>
             </ns:GetProductRequest>'''
 
             body = _soap_call(endpoint, 'getProduct', body_xml)
@@ -333,11 +340,12 @@ class PromoStandardsConnector:
     def get_inventory(self, product_id: str) -> dict:
         try:
             endpoint = self._get_endpoint('inventory')
+            safe_product_id = xml_escape(product_id)
             body_xml = f'''<ns:GetInventoryLevelsRequest xmlns:ns="{NS['inv']}">
               <ns:wsVersion>2.0.0</ns:wsVersion>
-              <ns:id>{self.account_id}</ns:id>
-              <ns:password>{self.password}</ns:password>
-              <ns:productId>{product_id}</ns:productId>
+              <ns:id>{self._safe_account_id}</ns:id>
+              <ns:password>{self._safe_password}</ns:password>
+              <ns:productId>{safe_product_id}</ns:productId>
             </ns:GetInventoryLevelsRequest>'''
 
             body = _soap_call(endpoint, 'getInventoryLevels', body_xml)
@@ -399,11 +407,12 @@ class PromoStandardsConnector:
     def get_pricing(self, product_id: str) -> dict:
         try:
             endpoint = self._get_endpoint('pricing')
+            safe_product_id = xml_escape(product_id)
             body_xml = f'''<ns:GetConfigurationAndPricingRequest xmlns:ns="{NS['ppc']}">
               <ns:wsVersion>1.0.0</ns:wsVersion>
-              <ns:id>{self.account_id}</ns:id>
-              <ns:password>{self.password}</ns:password>
-              <ns:productId>{product_id}</ns:productId>
+              <ns:id>{self._safe_account_id}</ns:id>
+              <ns:password>{self._safe_password}</ns:password>
+              <ns:productId>{safe_product_id}</ns:productId>
               <ns:currency>USD</ns:currency>
               <ns:fobId></ns:fobId>
               <ns:priceType>Net</ns:priceType>
@@ -460,14 +469,14 @@ class PromoStandardsConnector:
     def get_media(self, product_id: str) -> dict:
         try:
             endpoint = self._get_endpoint('media')
-            password = self.media_password
+            safe_product_id = xml_escape(product_id)
             body_xml = f'''<ns:GetMediaContentRequest xmlns:ns="{NS['mc']}">
               <ns:wsVersion>1.1.0</ns:wsVersion>
-              <ns:id>{self.account_id}</ns:id>
-              <ns:password>{password}</ns:password>
+              <ns:id>{self._safe_account_id}</ns:id>
+              <ns:password>{self._safe_media_password}</ns:password>
               <ns:cultureName>en-us</ns:cultureName>
               <ns:mediaType>Image</ns:mediaType>
-              <ns:productId>{product_id}</ns:productId>
+              <ns:productId>{safe_product_id}</ns:productId>
               <ns:partId></ns:partId>
               <ns:classType>0</ns:classType>
             </ns:GetMediaContentRequest>'''

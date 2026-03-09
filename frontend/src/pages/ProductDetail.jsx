@@ -219,43 +219,63 @@ export default function ProductDetail() {
 
         <TabsContent value="media">
           {product.media?.length > 0 ? (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-              {product.media.map((m, i) => (
-                <Card key={m.id || i} className="bg-zinc-900/50 border-zinc-800 rounded-sm overflow-hidden">
-                  <div className="w-full h-48 bg-zinc-800 flex items-center justify-center relative">
-                    <img 
-                      src={m.url} 
-                      alt={m.description || "Product"} 
-                      className="w-full h-full object-cover" 
-                      onError={(e) => { 
-                        e.target.style.display = 'none'; 
-                        e.target.nextSibling.style.display = 'flex';
-                      }} 
-                    />
-                    <div className="hidden absolute inset-0 flex-col items-center justify-center text-zinc-500 p-2">
-                      <Image className="w-8 h-8 mb-2" strokeWidth={1} />
-                      <p className="text-xs text-center break-all">{m.url?.split('/').pop()}</p>
-                    </div>
-                  </div>
-                  <CardContent className="p-2">
-                    <p className="text-xs font-mono text-zinc-500 truncate" title={m.url}>{m.url?.split('/').pop() || m.media_type}</p>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {product.media.map((m, i) => {
+                  // Use media proxy to bypass CDN restrictions
+                  const proxyUrl = m.url ? `${API}/media_proxy?url=${encodeURIComponent(m.url)}` : '';
+                  return (
+                    <Card key={m.id || i} className="bg-zinc-900/50 border-zinc-800 rounded-sm overflow-hidden group">
+                      <div className="w-full h-48 bg-zinc-800 flex items-center justify-center relative">
+                        <img 
+                          src={proxyUrl} 
+                          alt={m.description || "Product"} 
+                          className="w-full h-full object-cover" 
+                          onError={(e) => { 
+                            e.target.style.display = 'none'; 
+                            e.target.nextSibling.style.display = 'flex';
+                          }} 
+                        />
+                        <div className="hidden absolute inset-0 flex-col items-center justify-center text-zinc-500 p-2 bg-zinc-800">
+                          <Image className="w-8 h-8 mb-2" strokeWidth={1} />
+                          <p className="text-xs text-center mb-2">Image unavailable</p>
+                          <a 
+                            href={m.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-400 hover:text-blue-300 underline"
+                          >
+                            Open original
+                          </a>
+                        </div>
+                      </div>
+                      <CardContent className="p-2">
+                        <a 
+                          href={m.url} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-xs font-mono text-zinc-500 hover:text-zinc-300 truncate block" 
+                          title={m.url}
+                        >
+                          {m.url?.split('/').pop() || m.media_type}
+                        </a>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+              <div className="mt-4 p-3 bg-amber-900/20 border border-amber-800/50 rounded-sm">
+                <p className="text-xs text-amber-400">
+                  <strong>Note:</strong> Some supplier images may not load due to CDN bot protection.
+                  Click on the image URL to open the original in a new tab (may require verification).
+                </p>
+              </div>
+            </>
           ) : (
             <div className="flex flex-col items-center justify-center py-20 text-zinc-600">
               <Image className="w-12 h-12 mb-4 text-zinc-700" strokeWidth={1} />
               <p className="font-mono text-sm">NO MEDIA AVAILABLE</p>
               <p className="text-xs mt-1">Sync media from supplier to load product images</p>
-            </div>
-          )}
-          {product.media?.length > 0 && (
-            <div className="mt-4 p-3 bg-amber-900/20 border border-amber-800/50 rounded-sm">
-              <p className="text-xs text-amber-400">
-                <strong>Note:</strong> Some supplier images may not load due to CDN restrictions. 
-                The URLs are stored and can be accessed from authorized systems.
-              </p>
             </div>
           )}
         </TabsContent>

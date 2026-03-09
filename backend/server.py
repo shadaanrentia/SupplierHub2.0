@@ -72,7 +72,7 @@ def row_to_dict(row):
             if isinstance(v, str):
                 try:
                     d[k] = json.loads(v)
-                except:
+                except (json.JSONDecodeError, TypeError):
                     d[k] = {} if k == 'services' else []
             elif v is None:
                 d[k] = {} if k == 'services' else []
@@ -802,7 +802,7 @@ async def toggle_selection(product_id: str, data: ProductSelectRequest, user: di
 async def bulk_select(data: BulkSelectRequest, user: dict = Depends(get_current_user)):
     async with pool.acquire() as conn:
         status = "pending" if data.selected else "not_selected"
-        result = await conn.execute("""
+        await conn.execute("""
             UPDATE products SET selected_for_odoo = $1, odoo_sync_status = $2, updated_at = $3 WHERE id = ANY($4)
         """, data.selected, status, utc_now(), data.product_ids)
         return {"status": "updated"}
@@ -1140,10 +1140,19 @@ async def sync_pricing_task(supplier_id: str, log_id: str):
             try:
                 result = connector.get_pricing(product['supplier_sku'])
                 if result.get('success') and result.get('pricing'):
+                    all_prices = []  # Track all prices to calculate base_price
                     async with pool.acquire() as conn:
                         for price_item in result['pricing']:
                             part_id = price_item.get('part_id', '')
-                            price = float(price_item.get('price', 0) or 0)
+                            # Extract the first/lowest quantity price from the prices array
+                            prices = price_item.get('prices', [])
+                            price = 0.0
+                            if prices:
+                                # Sort by min_quantity and get the first (lowest tier) price
+                                sorted_prices = sorted(prices, key=lambda x: x.get('min_quantity', 0))
+                                price = float(sorted_prices[0].get('price', 0) or 0)
+                                if price > 0:
+                                    all_prices.append(price)
                             
                             r = await conn.execute('''
                                 UPDATE product_variants SET price = $1, updated_at = $2
@@ -1152,6 +1161,14 @@ async def sync_pricing_task(supplier_id: str, log_id: str):
                             
                             if r != "UPDATE 0":
                                 updated_count += 1
+                        
+                        # Update product base_price with the minimum variant price
+                        if all_prices:
+                            base_price = min(all_prices)
+                            await conn.execute('''
+                                UPDATE products SET base_price = $1, updated_at = $2
+                                WHERE id = $3
+                            ''', base_price, utc_now(), product['id'])
             except Exception as e:
                 logger.error(f"Pricing sync error for {product['supplier_sku']}: {e}")
             
@@ -1279,13 +1296,28 @@ async def sync_products_bulk(
                 elif sync_type == "pricing":
                     result = connector.get_pricing(product_sku)
                     if result.get('success') and result.get('pricing'):
+                        all_prices = []
                         for price_item in result['pricing']:
                             part_id = price_item.get('part_id', '')
-                            price = float(price_item.get('price', 0) or 0)
+                            # Extract the first/lowest quantity price from the prices array
+                            prices = price_item.get('prices', [])
+                            price = 0.0
+                            if prices:
+                                # Sort by min_quantity and get the first (lowest tier) price
+                                sorted_prices = sorted(prices, key=lambda x: x.get('min_quantity', 0))
+                                price = float(sorted_prices[0].get('price', 0) or 0)
+                                if price > 0:
+                                    all_prices.append(price)
                             await conn.execute('''
                                 UPDATE product_variants SET price = $1, updated_at = $2
                                 WHERE product_id = $3 AND variant_sku = $4
                             ''', price, utc_now(), product_id, part_id)
+                        # Update product base_price
+                        if all_prices:
+                            await conn.execute('''
+                                UPDATE products SET base_price = $1, updated_at = $2
+                                WHERE id = $3
+                            ''', min(all_prices), utc_now(), product_id)
                         results["success"] += 1
                     else:
                         results["failed"] += 1
@@ -1460,10 +1492,19 @@ async def _sync_product_pricing_internal(product_id: str) -> dict:
         
         pricing_items = result.get('pricing', [])
         updated_count = 0
+        all_prices = []  # Track all prices to calculate base_price
         
         for price_item in pricing_items:
             part_id = price_item.get('part_id', '')
-            price = float(price_item.get('price', 0) or 0)
+            # Extract the first/lowest quantity price from the prices array
+            prices = price_item.get('prices', [])
+            price = 0.0
+            if prices:
+                # Sort by min_quantity and get the first (lowest tier) price
+                sorted_prices = sorted(prices, key=lambda x: x.get('min_quantity', 0))
+                price = float(sorted_prices[0].get('price', 0) or 0)
+                if price > 0:
+                    all_prices.append(price)
             
             r = await conn.execute('''
                 UPDATE product_variants SET price = $1, updated_at = $2
@@ -1472,6 +1513,14 @@ async def _sync_product_pricing_internal(product_id: str) -> dict:
             
             if r != "UPDATE 0":
                 updated_count += 1
+        
+        # Update product base_price with the minimum variant price
+        if all_prices:
+            base_price = min(all_prices)
+            await conn.execute('''
+                UPDATE products SET base_price = $1, updated_at = $2
+                WHERE id = $3
+            ''', base_price, utc_now(), product_id)
         
         return {"success": True, "message": f"Updated pricing for {updated_count} variants", "variants_updated": updated_count}
 
@@ -1576,6 +1625,76 @@ async def sync_to_odoo(background_tasks: BackgroundTasks, user: dict = Depends(g
             synced += 1
     
     return {"synced": synced, "total": len(products)}
+
+
+# ==================== MEDIA PROXY ====================
+from fastapi.responses import StreamingResponse
+import httpx
+
+@api_router.get("/media_proxy")
+async def media_proxy(url: str):
+    """Proxy media requests to bypass CDN restrictions.
+    
+    Some supplier CDNs block direct image access (403 Forbidden).
+    This endpoint fetches the image server-side and returns it to the client.
+    """
+    if not url:
+        raise HTTPException(400, "URL parameter is required")
+    
+    # Validate URL is from an allowed domain (security measure)
+    allowed_domains = [
+        'cdn-atc.ca', 'cdn.ssactivewear.com', 'media.alphabroder.com',
+        'images.atc.ca', 'atc.ca', 'ssactivewear.com', 'alphabroder.com',
+        'www.atc.ca', 'www.ssactivewear.com', 'www.alphabroder.com'
+    ]
+    
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        
+        # Check if domain is allowed (or contains an allowed domain)
+        is_allowed = any(allowed in domain for allowed in allowed_domains)
+        if not is_allowed:
+            raise HTTPException(403, f"Domain not allowed: {domain}")
+        
+        # Fetch the image with proper headers
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'image/*,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': f'https://{domain}/',
+            }
+            
+            response = await client.get(url, headers=headers, follow_redirects=True)
+            
+            if response.status_code != 200:
+                raise HTTPException(response.status_code, f"Failed to fetch image: HTTP {response.status_code}")
+            
+            # Get content type from response or guess from URL
+            content_type = response.headers.get('content-type', 'image/jpeg')
+            if 'text/html' in content_type:
+                raise HTTPException(403, "Received HTML instead of image - CDN may still be blocking")
+            
+            # Stream the response back
+            return StreamingResponse(
+                iter([response.content]),
+                media_type=content_type,
+                headers={
+                    'Cache-Control': 'public, max-age=86400',
+                    'Access-Control-Allow-Origin': '*',
+                }
+            )
+            
+    except httpx.RequestError as e:
+        logger.error(f"Media proxy error: {e}")
+        raise HTTPException(500, f"Failed to fetch media: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Media proxy error: {e}")
+        raise HTTPException(500, f"Media proxy error: {str(e)}")
 
 
 # ==================== HEALTH CHECK ====================
