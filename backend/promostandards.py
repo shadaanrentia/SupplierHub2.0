@@ -328,11 +328,23 @@ class PromoStandardsConnector:
             body = _soap_call(endpoint, 'getInventoryLevels', body_xml)
             inventory = []
 
+            # Helper to extract quantity value from nested Quantity element
+            def get_quantity_value(parent_el):
+                """Extract value from <Quantity><value>X</value></Quantity> structure"""
+                for child in parent_el.iter():
+                    ctag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                    if ctag == 'value' and child.text:
+                        try:
+                            return int(float(child.text.strip()))
+                        except ValueError:
+                            pass
+                return 0
+
             for el in body.iter():
                 tag = el.tag.split('}')[-1] if '}' in el.tag else el.tag
                 if tag == 'PartInventory':
                     item = {'part_id': '', 'part_color': '', 'label_size': '', 'quantity_available': 0, 'warehouses': []}
-                    for child in el.iter():
+                    for child in el:
                         ctag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
                         if ctag == 'partId' and child.text:
                             item['part_id'] = child.text.strip()
@@ -340,26 +352,25 @@ class PromoStandardsConnector:
                             item['part_color'] = child.text.strip()
                         elif ctag == 'labelSize' and child.text:
                             item['label_size'] = child.text.strip()
-                        elif ctag == 'quantityAvailable' and child.text:
-                            try:
-                                item['quantity_available'] = int(float(child.text.strip()))
-                            except ValueError:
-                                pass
-                        elif ctag == 'InventoryLocation':
-                            wh = {'id': '', 'name': '', 'quantity': 0}
-                            for loc_child in child.iter():
-                                ltag = loc_child.tag.split('}')[-1] if '}' in loc_child.tag else loc_child.tag
-                                if ltag == 'inventoryLocationId' and loc_child.text:
-                                    wh['id'] = loc_child.text.strip()
-                                elif ltag == 'inventoryLocationName' and loc_child.text:
-                                    wh['name'] = loc_child.text.strip()
-                                elif ltag == 'inventoryLocationQuantity' and loc_child.text:
-                                    try:
-                                        wh['quantity'] = int(float(loc_child.text.strip()))
-                                    except ValueError:
-                                        pass
-                            if wh['id']:
-                                item['warehouses'].append(wh)
+                        elif ctag == 'quantityAvailable':
+                            # Handle nested <Quantity><value>X</value></Quantity> structure
+                            item['quantity_available'] = get_quantity_value(child)
+                        elif ctag == 'InventoryLocationArray':
+                            for loc_el in child:
+                                loc_tag = loc_el.tag.split('}')[-1] if '}' in loc_el.tag else loc_el.tag
+                                if loc_tag == 'InventoryLocation':
+                                    wh = {'id': '', 'name': '', 'quantity': 0}
+                                    for loc_child in loc_el:
+                                        ltag = loc_child.tag.split('}')[-1] if '}' in loc_child.tag else loc_child.tag
+                                        if ltag == 'inventoryLocationId' and loc_child.text:
+                                            wh['id'] = loc_child.text.strip()
+                                        elif ltag == 'inventoryLocationName' and loc_child.text:
+                                            wh['name'] = loc_child.text.strip()
+                                        elif ltag == 'inventoryLocationQuantity':
+                                            # Handle nested <Quantity><value>X</value></Quantity> structure
+                                            wh['quantity'] = get_quantity_value(loc_child)
+                                    if wh['id']:
+                                        item['warehouses'].append(wh)
                     if item['part_id']:
                         inventory.append(item)
 

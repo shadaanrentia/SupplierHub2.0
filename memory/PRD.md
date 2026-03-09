@@ -102,6 +102,7 @@ Build a middleware application that integrates supplier product data using Promo
 1. **S&S Activewear 403 Block**: Their server blocks requests from our IP - requires IP whitelisting
 2. **Product Names**: Some products show "Array" due to SOAP response parsing (fix applied, needs re-sync)
 3. **Odoo Integration**: Mocked - awaiting user credentials
+4. ~~**Inventory Sync Parsing Bug**: Fixed - was not parsing nested `<Quantity><value>` XML structure correctly~~
 
 ## Prioritized Backlog
 
