@@ -26,6 +26,21 @@ Build a middleware application that integrates supplier product data using Promo
 
 ## What's Been Implemented
 
+### December 2025 - Product Search & Individual Sync Features
+- **Product Search Page**: New page at `/product-search` for searching products within a specific supplier
+  - Supplier dropdown selector (required field)
+  - Product name search input
+  - Bulk sync buttons: "Sync All Pricing", "Sync All Inventory", "Sync All Media"
+  - Grid/List view toggle
+- **Individual Product Sync**: Added sync options for each product on the Products page
+  - Dropdown menu (three dots icon) on each product card
+  - Options: Sync Pricing, Sync Inventory, Sync Media for single products
+  - Shows loading spinner during sync operations
+  - Toast notifications for success/failure
+- **View Toggle**: Grid/List view toggle on both Products and Product Search pages
+- **Bulk Sync API**: New endpoint `POST /api/sync/products/bulk?sync_type={pricing|inventory|media}` with product_ids in body
+- **Fixed Route Ordering Bug**: Moved bulk sync endpoint before supplier_id route to avoid route conflicts
+
 ### March 9, 2026 - Authentication & User Management
 - **Login Page**: Username/password login with JWT tokens (24h expiration)
 - **Registration**: New users can register, accounts require admin approval
@@ -72,7 +87,13 @@ Build a middleware application that integrates supplier product data using Promo
    - Status: Active, but server blocks requests from this IP (WAF)
    - **Resolution**: User needs to contact S&S to whitelist server IP
 
-## Testing Results (March 8, 2026)
+## Testing Results
+### December 2025 (Latest)
+- Backend API: 100% pass (15/15 new tests for Product Search & Individual Sync)
+- Frontend UI: 100% pass (all new features working)
+- Total products in database: 572
+
+### March 8, 2026 (Previous)
 - Backend API: 100% pass (23/23 tests)
 - Frontend UI: 90% pass
 - Integration: Working (ATC sync successful, S&S blocked by WAF)
@@ -91,7 +112,8 @@ Build a middleware application that integrates supplier product data using Promo
 ### P1 (Important)
 - [ ] Implement APScheduler for automated periodic syncs
 - [ ] Re-sync products to apply name parsing fix
-- [ ] Add pricing sync to populate product prices
+- [ ] Run pricing sync to populate product prices (products currently show $0.00)
+- [ ] Run media sync to display product images (currently showing placeholders)
 
 ### P2 (Nice to have)
 - [ ] Add bulk data sync using BulkData SOAP endpoint
@@ -122,6 +144,10 @@ Build a middleware application that integrates supplier product data using Promo
 - `POST /api/sync/inventory/{supplier_id}` - Trigger inventory sync
 - `POST /api/sync/pricing/{supplier_id}` - Trigger pricing sync
 - `POST /api/sync/media/{supplier_id}` - Trigger media sync
+- `POST /api/sync/product/{product_id}/pricing` - Sync pricing for single product
+- `POST /api/sync/product/{product_id}/inventory` - Sync inventory for single product
+- `POST /api/sync/product/{product_id}/media` - Sync media for single product
+- `POST /api/sync/products/bulk?sync_type={type}` - Bulk sync (body: product_ids array)
 - `GET /api/sync/logs` - Get sync history
 
 ### Odoo
