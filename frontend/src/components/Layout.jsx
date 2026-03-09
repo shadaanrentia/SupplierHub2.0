@@ -1,19 +1,27 @@
 import { useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { LayoutDashboard, Package, Truck, RefreshCw, Settings, ChevronLeft, ChevronRight, Layers } from "lucide-react";
+import { LayoutDashboard, Package, Truck, RefreshCw, Settings, ChevronLeft, ChevronRight, Layers, Users, LogOut, User } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
-const navItems = [
-  { path: "/", label: "Dashboard", icon: LayoutDashboard },
-  { path: "/products", label: "Products", icon: Package },
-  { path: "/suppliers", label: "Suppliers", icon: Truck },
-  { path: "/sync", label: "Sync Jobs", icon: RefreshCw },
-  { path: "/settings", label: "Settings", icon: Settings },
-];
+const getNavItems = (isAdmin) => {
+  const items = [
+    { path: "/", label: "Dashboard", icon: LayoutDashboard },
+    { path: "/products", label: "Products", icon: Package },
+    { path: "/suppliers", label: "Suppliers", icon: Truck },
+    { path: "/sync", label: "Sync Jobs", icon: RefreshCw },
+    { path: "/settings", label: "Settings", icon: Settings },
+  ];
+  if (isAdmin) {
+    items.push({ path: "/users", label: "Users", icon: Users });
+  }
+  return items;
+};
 
-export default function Layout() {
+export default function Layout({ user, onLogout }) {
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
+  const navItems = getNavItems(user?.role === "admin");
 
   return (
     <div className="flex h-screen bg-[#09090B] text-zinc-100 font-body">
@@ -58,6 +66,43 @@ export default function Layout() {
           })}
         </nav>
 
+        {/* User section */}
+        <div className="border-t border-zinc-800 p-3">
+          {!collapsed ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 px-2">
+                <div className="w-8 h-8 bg-zinc-800 rounded-full flex items-center justify-center border border-zinc-700">
+                  <User className="w-4 h-4 text-zinc-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-zinc-200 truncate">{user?.name}</p>
+                  <p className="text-xs text-zinc-500 truncate">@{user?.username}</p>
+                </div>
+              </div>
+              <Button
+                onClick={onLogout}
+                variant="ghost"
+                className="w-full justify-start text-zinc-400 hover:text-red-400 hover:bg-red-950/20 rounded-none text-sm"
+                data-testid="logout-btn"
+              >
+                <LogOut className="w-4 h-4 mr-2" />
+                Sign Out
+              </Button>
+            </div>
+          ) : (
+            <Button
+              onClick={onLogout}
+              variant="ghost"
+              size="sm"
+              className="w-full text-zinc-400 hover:text-red-400 hover:bg-red-950/20 rounded-none"
+              data-testid="logout-btn"
+              title="Sign Out"
+            >
+              <LogOut className="w-4 h-4" />
+            </Button>
+          )}
+        </div>
+
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="flex items-center justify-center h-10 border-t border-zinc-800 text-zinc-500 hover:text-white transition-colors"
@@ -74,3 +119,4 @@ export default function Layout() {
     </div>
   );
 }
+

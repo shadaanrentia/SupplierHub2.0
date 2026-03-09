@@ -23,6 +23,7 @@ export default function Products() {
   const [category, setCategory] = useState("all");
   const [brand, setBrand] = useState("all");
   const [selectedFilter, setSelectedFilter] = useState("all");
+  const [odooSyncFilter, setOdooSyncFilter] = useState("all"); // New: all, synced, not_synced
   const [suppliers, setSuppliers] = useState([]);
   const [categories, setCategories] = useState([]);
   const [brands, setBrands] = useState([]);
@@ -52,6 +53,8 @@ export default function Products() {
       if (brand !== "all") params.brand = brand;
       if (selectedFilter === "selected") params.selected_for_odoo = true;
       if (selectedFilter === "not_selected") params.selected_for_odoo = false;
+      if (odooSyncFilter === "synced") params.odoo_synced = true;
+      if (odooSyncFilter === "not_synced") params.odoo_synced = false;
       const res = await axios.get(`${API}/products`, { params });
       setProducts(res.data.products || []);
       setTotal(res.data.total || 0);
@@ -61,7 +64,7 @@ export default function Products() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, supplier, category, brand, selectedFilter]);
+  }, [page, search, supplier, category, brand, selectedFilter, odooSyncFilter]);
 
   useEffect(() => {
     fetchFilters();
@@ -154,6 +157,17 @@ export default function Products() {
             <SelectItem value="all">All Products</SelectItem>
             <SelectItem value="selected">Selected for Odoo</SelectItem>
             <SelectItem value="not_selected">Not Selected</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Select value={odooSyncFilter} onValueChange={(v) => { setOdooSyncFilter(v); setPage(1); }}>
+          <SelectTrigger className="w-44 bg-zinc-950 border-zinc-800 rounded-none text-sm" data-testid="filter-odoo-sync">
+            <SelectValue placeholder="Odoo Sync Status" />
+          </SelectTrigger>
+          <SelectContent className="bg-zinc-900 border-zinc-800 rounded-none">
+            <SelectItem value="all">All Sync Status</SelectItem>
+            <SelectItem value="synced">Synced to Odoo</SelectItem>
+            <SelectItem value="not_synced">Not Synced</SelectItem>
           </SelectContent>
         </Select>
       </div>

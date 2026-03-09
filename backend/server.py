@@ -1,4 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Query, BackgroundTasks, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,9 +7,11 @@ import os
 import logging
 import uuid
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Dict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from passlib.context import CryptContext
+import jwt
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -16,6 +19,15 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+# JWT Configuration
+JWT_SECRET = os.environ.get('JWT_SECRET', 'supplierhub-secret-key-change-in-production')
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRATION_HOURS = 24
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer(auto_error=False)
 
 app = FastAPI(title="SupplierHub - PromoStandards Middleware")
 api_router = APIRouter(prefix="/api")
@@ -30,6 +42,70 @@ def utc_now():
 
 def new_id():
     return str(uuid.uuid4())
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_access_token(user_id: str, role: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
+    payload = {"sub": user_id, "role": role, "exp": expire}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not credentials:
+        raise HTTPException(401, "Not authenticated")
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(401, "Invalid token")
+        user = await db.users.find_one({"id": user_id}, {"_id": 0, "password": 0})
+        if not user:
+            raise HTTPException(401, "User not found")
+        if user.get("status") != "approved":
+            raise HTTPException(403, "Account not approved")
+        return user
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid token")
+
+async def get_admin_user(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin access required")
+    return user
+
+
+# ==================== AUTH MODELS ====================
+class UserRegister(BaseModel):
+    name: str
+    email: str
+    username: str
+    password: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+class PasswordReset(BaseModel):
+    email: str
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+class UserApproval(BaseModel):
+    user_id: str
+    approved: bool
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    role: Optional[str] = None
+    status: Optional[str] = None
 
 
 # ==================== MODELS ====================
@@ -83,10 +159,30 @@ async def startup():
     await db.products.create_index("brand")
     await db.products.create_index("category")
     await db.products.create_index("selected_for_odoo")
+    await db.products.create_index("sync_status")
     await db.product_variants.create_index("id", unique=True)
     await db.product_variants.create_index("product_id")
     await db.product_media.create_index("product_id")
     await db.sync_logs.create_index("started_at")
+    await db.users.create_index("id", unique=True)
+    await db.users.create_index("username", unique=True)
+    await db.users.create_index("email", unique=True)
+
+    # Create default admin user
+    admin_exists = await db.users.find_one({"username": "admin"}, {"_id": 0})
+    if not admin_exists:
+        await db.users.insert_one({
+            "id": new_id(),
+            "name": "Shadaan Rentia",
+            "email": "admin@supplierhub.com",
+            "username": "admin",
+            "password": hash_password("admin"),
+            "role": "admin",
+            "status": "approved",
+            "created_at": utc_now(),
+            "updated_at": utc_now()
+        })
+        logger.info("Default admin user created: admin/admin")
 
     settings = await db.settings.find_one({"id": "system_settings"}, {"_id": 0})
     if not settings:
@@ -165,6 +261,157 @@ def auto_discover_endpoints(base_url: str, style: str) -> Dict[str, str]:
     pattern = ENDPOINT_PATTERNS.get(style, {})
     return {k: v.format(base=base) for k, v in pattern.items()}
 
+
+# ==================== AUTH ROUTES ====================
+@api_router.post("/auth/login")
+async def login(data: UserLogin):
+    user = await db.users.find_one({"username": data.username}, {"_id": 0})
+    if not user or not verify_password(data.password, user["password"]):
+        raise HTTPException(401, "Invalid username or password")
+    if user.get("status") == "pending":
+        raise HTTPException(403, "Account pending approval. Please wait for admin approval.")
+    if user.get("status") == "rejected":
+        raise HTTPException(403, "Account has been rejected. Contact admin for assistance.")
+    
+    token = create_access_token(user["id"], user.get("role", "user"))
+    return {
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "name": user["name"],
+            "email": user["email"],
+            "username": user["username"],
+            "role": user.get("role", "user")
+        }
+    }
+
+@api_router.post("/auth/register")
+async def register(data: UserRegister):
+    # Check if username or email already exists
+    existing = await db.users.find_one({"$or": [{"username": data.username}, {"email": data.email}]}, {"_id": 0})
+    if existing:
+        if existing.get("username") == data.username:
+            raise HTTPException(400, "Username already taken")
+        raise HTTPException(400, "Email already registered")
+    
+    user_id = new_id()
+    await db.users.insert_one({
+        "id": user_id,
+        "name": data.name,
+        "email": data.email,
+        "username": data.username,
+        "password": hash_password(data.password),
+        "role": "user",
+        "status": "pending",  # Requires admin approval
+        "created_at": utc_now(),
+        "updated_at": utc_now()
+    })
+    
+    return {"message": "Registration successful. Your account is pending admin approval.", "user_id": user_id}
+
+@api_router.post("/auth/reset-password")
+async def reset_password(data: PasswordReset):
+    user = await db.users.find_one({"email": data.email}, {"_id": 0})
+    if not user:
+        # Don't reveal if email exists
+        return {"message": "If your email is registered, you will receive a password reset link."}
+    
+    # Generate reset token (in production, send via email)
+    reset_token = new_id()
+    await db.users.update_one({"id": user["id"]}, {"$set": {
+        "reset_token": reset_token,
+        "reset_token_expiry": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    }})
+    
+    # In production, send email with reset link
+    logger.info(f"Password reset requested for {data.email}. Token: {reset_token}")
+    return {"message": "If your email is registered, you will receive a password reset link.", "debug_token": reset_token}
+
+@api_router.post("/auth/reset-password/{token}")
+async def complete_password_reset(token: str, new_password: str = Query(...)):
+    user = await db.users.find_one({"reset_token": token}, {"_id": 0})
+    if not user:
+        raise HTTPException(400, "Invalid or expired reset token")
+    
+    expiry = user.get("reset_token_expiry")
+    if expiry and datetime.fromisoformat(expiry) < datetime.now(timezone.utc):
+        raise HTTPException(400, "Reset token has expired")
+    
+    await db.users.update_one({"id": user["id"]}, {"$set": {
+        "password": hash_password(new_password),
+        "reset_token": None,
+        "reset_token_expiry": None,
+        "updated_at": utc_now()
+    }})
+    
+    return {"message": "Password reset successful. You can now login with your new password."}
+
+@api_router.get("/auth/me")
+async def get_current_user_info(user: dict = Depends(get_current_user)):
+    return {"user": user}
+
+@api_router.post("/auth/change-password")
+async def change_password(data: PasswordChange, user: dict = Depends(get_current_user)):
+    full_user = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    if not verify_password(data.current_password, full_user["password"]):
+        raise HTTPException(400, "Current password is incorrect")
+    
+    await db.users.update_one({"id": user["id"]}, {"$set": {
+        "password": hash_password(data.new_password),
+        "updated_at": utc_now()
+    }})
+    
+    return {"message": "Password changed successfully"}
+
+
+# ==================== USER MANAGEMENT ROUTES (Admin Only) ====================
+@api_router.get("/users")
+async def list_users(admin: dict = Depends(get_admin_user)):
+    users = await db.users.find({}, {"_id": 0, "password": 0, "reset_token": 0}).to_list(500)
+    return {"users": users}
+
+@api_router.get("/users/pending")
+async def list_pending_users(admin: dict = Depends(get_admin_user)):
+    users = await db.users.find({"status": "pending"}, {"_id": 0, "password": 0}).to_list(100)
+    return {"users": users}
+
+@api_router.post("/users/{user_id}/approve")
+async def approve_user(user_id: str, data: UserApproval, admin: dict = Depends(get_admin_user)):
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    
+    new_status = "approved" if data.approved else "rejected"
+    await db.users.update_one({"id": user_id}, {"$set": {"status": new_status, "updated_at": utc_now()}})
+    
+    return {"message": f"User {user['username']} has been {new_status}"}
+
+@api_router.put("/users/{user_id}")
+async def update_user(user_id: str, data: UserUpdate, admin: dict = Depends(get_admin_user)):
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    
+    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    if updates:
+        updates["updated_at"] = utc_now()
+        await db.users.update_one({"id": user_id}, {"$set": updates})
+    
+    return {"message": "User updated successfully"}
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, admin: dict = Depends(get_admin_user)):
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.get("username") == "admin":
+        raise HTTPException(400, "Cannot delete the default admin user")
+    
+    await db.users.delete_one({"id": user_id})
+    return {"message": "User deleted successfully"}
+
+
+# ==================== SUPPLIER ROUTES ====================
 @api_router.get("/suppliers")
 async def list_suppliers():
     suppliers = await db.suppliers.find({}, {"_id": 0}).to_list(100)
@@ -243,6 +490,7 @@ async def list_products(
     price_max: Optional[float] = None,
     status: Optional[str] = None,
     selected_for_odoo: Optional[bool] = None,
+    odoo_synced: Optional[bool] = None,  # New filter: True = synced to Odoo, False = not synced
     sort_by: str = "created_at",
     sort_order: str = "desc"
 ):
@@ -267,6 +515,11 @@ async def list_products(
         q["status"] = status
     if selected_for_odoo is not None:
         q["selected_for_odoo"] = selected_for_odoo
+    if odoo_synced is not None:
+        if odoo_synced:
+            q["sync_status"] = "synced"
+        else:
+            q["sync_status"] = {"$ne": "synced"}
 
     skip = (page - 1) * limit
     sort_dir = -1 if sort_order == "desc" else 1

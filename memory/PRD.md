@@ -26,6 +26,15 @@ Build a middleware application that integrates supplier product data using Promo
 
 ## What's Been Implemented
 
+### March 9, 2026 - Authentication & User Management
+- **Login Page**: Username/password login with JWT tokens (24h expiration)
+- **Registration**: New users can register, accounts require admin approval
+- **Password Reset**: Email-based reset flow (sends reset token)
+- **User Management (Admin)**: Approve/reject pending users, manage roles, delete users
+- **Protected Routes**: All dashboard routes require authentication
+- **Default Admin**: Shadaan Rentia (admin/admin) created on startup
+- **Odoo Sync Filter**: Products page filter to show products synced/not synced to Odoo
+
 ### March 8, 2026 - Quick Sync All Feature
 - **Quick Sync All Button**: Dashboard button that triggers Products → Media → Pricing syncs for all suppliers sequentially
 - **Progress Indicator**: Shows current sync step, supplier name, and progress bar (X/total steps)
