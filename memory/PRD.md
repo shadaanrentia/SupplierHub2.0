@@ -7,7 +7,7 @@ Build a middleware application that integrates supplier product data using Promo
 - **Backend**: FastAPI (Python) with PostgreSQL
 - **Frontend**: React with Shadcn UI, Tailwind CSS, dark theme
 - **Database**: PostgreSQL 15 (users, suppliers, products, product_variants, product_media, sync_logs, settings)
-- **SOAP Client**: Raw XML over HTTP (no WSDL dependency - bypasses WAF blocking)
+- **SOAP Client**: Raw XML over HTTP with XML escaping (no WSDL dependency - bypasses WAF blocking)
 - **Flow**: PromoStandards SOAP APIs → Raw XML Connector → PostgreSQL Staging → Admin Curation → Odoo ERP (mock mode)
 
 ## User Personas
@@ -25,6 +25,26 @@ Build a middleware application that integrates supplier product data using Promo
 8. Logging and error handling
 
 ## What's Been Implemented
+
+### March 9, 2026 - Bug Fixes (Pricing & Media)
+- **Pricing Sync Fix**: Fixed critical bug where pricing sync was looking for a non-existent `price` key instead of the `prices` array in API response
+  - Now correctly extracts the first/lowest quantity tier price from the `prices` array
+  - Also updates product `base_price` with the minimum variant price after pricing sync
+  - Affected files: `backend/server.py` (sync_pricing_task, _sync_product_pricing_internal, bulk sync)
+- **XML Escaping**: Added proper XML escaping for special characters in supplier credentials (e.g., # @ &)
+  - Uses `xml.sax.saxutils.escape` for account_id, password, and media_password
+  - Also escapes product_id in API requests
+  - Affected file: `backend/promostandards.py`
+- **Media Proxy Endpoint**: Added new `GET /api/media_proxy?url=<encoded_url>` endpoint to bypass CDN restrictions
+  - Validates URL domain against allowed supplier domains
+  - Streams image content with proper headers
+  - Affected file: `backend/server.py`
+- **Frontend Media Display**: Updated ProductDetail.jsx to use the media proxy for all images
+  - Added "Open original" link for fallback access
+  - Improved error handling display
+  - Affected file: `frontend/src/pages/ProductDetail.jsx`
+
+**Note**: Supplier CDNs have CAPTCHA bot protection that blocks server-side requests. Images may not display even with proxy. Users can click "Open original" to view in browser after passing CAPTCHA.
 
 ### December 2025 - PostgreSQL Migration & Final Features
 - **Database Migration**: Migrated from MongoDB to PostgreSQL
@@ -116,21 +136,21 @@ Build a middleware application that integrates supplier product data using Promo
 - Integration: Working (ATC sync successful, S&S blocked by WAF)
 
 ## Known Issues
-1. **S&S Activewear 403 Block**: Their server blocks requests from our IP - requires IP whitelisting
+1. **All Supplier APIs CAPTCHA Protected**: PromoStandards API endpoints have bot protection that blocks server-side requests. Users need to contact their supplier to whitelist the server's IP address.
 2. **Odoo Integration**: Mocked - awaiting user credentials
+3. ~~**Pricing Sync Bug**: Fixed - was looking for non-existent `price` key instead of `prices` array~~
 4. ~~**Inventory Sync Parsing Bug**: Fixed - was not parsing nested `<Quantity><value>` XML structure correctly~~
+5. ~~**XML Special Characters**: Fixed - credentials with special characters like # @ & now properly escaped~~
 
 ## Prioritized Backlog
 
 ### P0 (Critical - Blocked)
-- [ ] S&S Activewear IP whitelisting (requires user action)
+- [ ] Get supplier IP whitelisting (ATC, S&S, etc.) - requires user to contact suppliers
 - [ ] Connect real Odoo instance (waiting for credentials)
 
 ### P1 (Important)
 - [ ] Implement APScheduler for automated periodic syncs
-- [ ] Re-sync products to apply name parsing fix
-- [ ] Run pricing sync to populate product prices (products currently show $0.00)
-- [ ] Run media sync to display product images (currently showing placeholders)
+- [ ] Re-sync products after IP whitelisting to get pricing/inventory/media data
 
 ### P2 (Nice to have)
 - [ ] Add bulk data sync using BulkData SOAP endpoint
@@ -167,11 +187,20 @@ Build a middleware application that integrates supplier product data using Promo
 - `POST /api/sync/products/bulk?sync_type={type}` - Bulk sync (body: product_ids array)
 - `GET /api/sync/logs` - Get sync history
 
+### Media
+- `GET /api/media_proxy?url={encoded_url}` - Proxy media requests to bypass CDN restrictions
+
 ### Odoo
 - `POST /api/odoo/push-products` - Push selected products to Odoo
 - `POST /api/odoo/test-connection` - Test Odoo connection
 
 ## Credentials
-- **ATC/SanMar**: Account 37887 (working)
-- **S&S Activewear**: Account 435145 (blocked by WAF)
+- **ATC/SanMar**: Account 37887 (API endpoint CAPTCHA protected)
+- **S&S Activewear**: Account 435145 (API endpoint CAPTCHA protected)
 - **Odoo**: Not provided yet
+
+## Testing Results (March 9, 2026)
+- Backend API: 100% pass (16/16 tests)
+- All CRUD endpoints working
+- Media proxy endpoint validates domains correctly
+- Database: PostgreSQL freshly installed (0 products currently due to CAPTCHA blocking)
