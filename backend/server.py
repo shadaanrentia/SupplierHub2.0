@@ -667,8 +667,46 @@ async def get_sync_log(log_id: str):
         raise HTTPException(404, "Log not found")
     return log
 
+@api_router.post("/sync/stop/{log_id}")
+async def stop_sync(log_id: str):
+    """Stop a running sync job by marking it as cancelled."""
+    log = await db.sync_logs.find_one({"id": log_id}, {"_id": 0})
+    if not log:
+        raise HTTPException(404, "Sync log not found")
+    if log.get("status") != "running":
+        raise HTTPException(400, f"Sync is not running (status: {log.get('status')})")
+    
+    # Mark as cancelled - the sync task will check this flag and stop
+    await db.sync_logs.update_one({"id": log_id}, {"$set": {
+        "status": "cancelled",
+        "completed_at": utc_now(),
+        "message": f"Cancelled by user. Processed {log.get('products_processed', 0)} items before stopping."
+    }})
+    
+    return {"status": "cancelled", "message": "Sync job cancelled"}
+
+@api_router.post("/sync/all/{supplier_id}")
+async def sync_all_for_supplier(supplier_id: str, background_tasks: BackgroundTasks, limit: int = Query(500, ge=1, le=5000)):
+    """Start a comprehensive sync: products → inventory → pricing → media in sequence."""
+    supplier = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})
+    if not supplier:
+        raise HTTPException(404, "Supplier not found")
+    
+    # Create a master sync log for the "all" operation
+    log = await _create_sync_log(supplier_id, supplier.get("supplier_name", ""), "full_sync", f"Full sync started (products → inventory → pricing → media, limit: {limit})")
+    
+    # Run the comprehensive sync in background
+    background_tasks.add_task(run_full_sync, supplier, log["id"], limit)
+    
+    return {"sync_log_id": log["id"], "status": "started", "sync_order": ["products", "inventory", "pricing", "media"]}
+
 
 # ==================== SYNC TASKS ====================
+async def check_sync_cancelled(sync_log_id: str) -> bool:
+    """Check if a sync has been cancelled."""
+    log = await db.sync_logs.find_one({"id": sync_log_id}, {"_id": 0, "status": 1})
+    return log and log.get("status") == "cancelled"
+
 async def run_product_sync(supplier: dict, sync_log_id: str, limit: int = 100):
     try:
         from promostandards import PromoStandardsConnector
@@ -686,6 +724,11 @@ async def run_product_sync(supplier: dict, sync_log_id: str, limit: int = 100):
         await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"message": f"Found {total_available} unique products, syncing {len(products_to_sync)}..."}})
 
         for i, pid in enumerate(products_to_sync):
+            # Check for cancellation every 10 items
+            if i % 10 == 0 and await check_sync_cancelled(sync_log_id):
+                logger.info(f"Sync {sync_log_id} was cancelled at item {i}")
+                return
+            
             try:
                 pr = connector.get_product(pid)
                 if pr['success'] and pr.get('product'):
@@ -933,6 +976,76 @@ async def run_odoo_push(settings: dict, sync_log_id: str):
                 errors += 1
                 error_details.append(str(e))
         await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"status": "completed", "completed_at": utc_now(), "products_processed": len(products), "products_created": created, "products_updated": updated, "errors_count": errors, "error_details": error_details[:20], "message": f"Odoo: {created} created, {updated} updated, {errors} errors"}})
+    except Exception as e:
+        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"status": "failed", "completed_at": utc_now(), "message": str(e)}})
+
+
+async def run_full_sync(supplier: dict, sync_log_id: str, limit: int = 500):
+    """Run a complete sync: products → inventory → pricing → media in sequence."""
+    try:
+        steps = [
+            ("products", run_product_sync, {"limit": limit}),
+            ("inventory", run_inventory_sync, {}),
+            ("pricing", run_pricing_sync, {}),
+            ("media", run_media_sync, {}),
+        ]
+        
+        total_steps = len(steps)
+        completed_steps = 0
+        all_errors = []
+        
+        for step_name, sync_func, kwargs in steps:
+            # Check for cancellation before each step
+            if await check_sync_cancelled(sync_log_id):
+                logger.info(f"Full sync {sync_log_id} was cancelled at step {step_name}")
+                return
+            
+            # Update progress
+            await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {
+                "message": f"Step {completed_steps + 1}/{total_steps}: Running {step_name} sync...",
+                "products_processed": completed_steps
+            }})
+            
+            # Create a sub-log for this step
+            step_log = await _create_sync_log(supplier["id"], supplier.get("supplier_name", ""), step_name, f"{step_name.capitalize()} sync (part of full sync)")
+            
+            # Run the sync
+            try:
+                await sync_func(supplier, step_log["id"], **kwargs)
+                completed_steps += 1
+                
+                # Check step result
+                step_result = await db.sync_logs.find_one({"id": step_log["id"]}, {"_id": 0})
+                if step_result and step_result.get("errors_count", 0) > 0:
+                    all_errors.append(f"{step_name}: {step_result.get('errors_count')} errors")
+                    
+            except Exception as step_error:
+                all_errors.append(f"{step_name}: {str(step_error)}")
+                logger.error(f"Full sync step {step_name} failed: {step_error}")
+        
+        # Final status
+        final_status = "completed" if not all_errors else "completed_with_errors"
+        final_message = f"Full sync complete: {completed_steps}/{total_steps} steps finished"
+        if all_errors:
+            final_message += f" ({len(all_errors)} errors)"
+        
+        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {
+            "status": final_status,
+            "completed_at": utc_now(),
+            "products_processed": completed_steps,
+            "products_created": total_steps,
+            "errors_count": len(all_errors),
+            "error_details": all_errors,
+            "message": final_message
+        }})
+        
+    except Exception as e:
+        logger.error(f"Full sync failed: {e}")
+        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {
+            "status": "failed",
+            "completed_at": utc_now(),
+            "message": str(e)
+        }})
     except Exception as e:
         await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"status": "failed", "completed_at": utc_now(), "message": str(e)}})
 

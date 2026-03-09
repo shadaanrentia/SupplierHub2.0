@@ -3,7 +3,7 @@ import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { RefreshCw, Play, Package, ArrowUpRight, Clock, AlertTriangle } from "lucide-react";
+import { RefreshCw, Play, Package, ArrowUpRight, Clock, AlertTriangle, Square, Zap, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -14,6 +14,7 @@ function SyncBadge({ status }) {
     completed_with_errors: "bg-amber-950/50 text-amber-400 border-amber-800",
     failed: "bg-red-950/50 text-red-400 border-red-800",
     running: "bg-blue-950/50 text-blue-400 border-blue-800",
+    cancelled: "bg-zinc-800 text-zinc-400 border-zinc-700",
   };
   return (
     <span className={`inline-flex px-2 py-0.5 text-xs font-mono border rounded-none ${s[status] || s.running}`}>
@@ -71,6 +72,33 @@ export default function SyncManagement() {
     }
   };
 
+  const triggerSyncAll = async (supplierId, supplierName) => {
+    const key = `${supplierId}-all`;
+    setSyncing((prev) => ({ ...prev, [key]: true }));
+    try {
+      const res = await axios.post(`${API}/sync/all/${supplierId}?limit=1500`);
+      toast.success(`Full sync started for ${supplierName} (Products → Inventory → Pricing → Media)`);
+      setTimeout(fetchData, 2000);
+    } catch (e) {
+      toast.error(`Failed to start full sync: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setSyncing((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const stopSync = async (logId) => {
+    setSyncing((prev) => ({ ...prev, [`stop-${logId}`]: true }));
+    try {
+      await axios.post(`${API}/sync/stop/${logId}`);
+      toast.success("Sync stopped");
+      setTimeout(fetchData, 1000);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to stop sync");
+    } finally {
+      setSyncing((prev) => ({ ...prev, [`stop-${logId}`]: false }));
+    }
+  };
+
   const pushToOdoo = async () => {
     setSyncing((prev) => ({ ...prev, odoo: true }));
     try {
@@ -114,7 +142,8 @@ export default function SyncManagement() {
                     <p className="text-sm font-medium text-zinc-200">{s.supplier_name}</p>
                     <p className="text-xs font-mono text-zinc-500">{s.account_number}</p>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap justify-end">
+                    {/* Individual sync buttons */}
                     {["products", "inventory", "pricing", "media"].map((type) => (
                       <Button
                         key={type}
@@ -132,6 +161,21 @@ export default function SyncManagement() {
                         {type}
                       </Button>
                     ))}
+                    {/* Sync All button */}
+                    <Button
+                      size="sm"
+                      onClick={() => triggerSyncAll(s.id, s.supplier_name)}
+                      disabled={syncing[`${s.id}-all`]}
+                      className="bg-emerald-700 hover:bg-emerald-600 text-white rounded-none text-xs border border-emerald-600"
+                      data-testid={`sync-all-${s.id}`}
+                    >
+                      {syncing[`${s.id}-all`] ? (
+                        <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                      ) : (
+                        <Zap className="w-3 h-3 mr-1" />
+                      )}
+                      Sync All
+                    </Button>
                   </div>
                 </div>
               ))}
@@ -209,6 +253,7 @@ export default function SyncManagement() {
                     <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Errors</th>
                     <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Message</th>
                     <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Started</th>
+                    <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -224,6 +269,25 @@ export default function SyncManagement() {
                       </td>
                       <td className="p-3 text-xs text-zinc-400 max-w-xs truncate">{log.message}</td>
                       <td className="p-3 text-xs font-mono text-zinc-500">{log.started_at ? new Date(log.started_at).toLocaleString() : "-"}</td>
+                      <td className="p-3">
+                        {log.status === "running" && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => stopSync(log.id)}
+                            disabled={syncing[`stop-${log.id}`]}
+                            className="text-red-400 hover:text-red-300 hover:bg-red-950/30 rounded-none h-7 px-2"
+                            data-testid={`stop-sync-${log.id}`}
+                          >
+                            {syncing[`stop-${log.id}`] ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Square className="w-3 h-3 mr-1" />
+                            )}
+                            Stop
+                          </Button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
