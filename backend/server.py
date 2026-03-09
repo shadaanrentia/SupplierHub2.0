@@ -67,11 +67,15 @@ def row_to_dict(row):
     for k, v in d.items():
         if isinstance(v, datetime):
             d[k] = v.isoformat()
-        elif isinstance(v, str) and k in ('services', 'warehouse_inventory') and v.startswith('{'):
-            try:
-                d[k] = json.loads(v)
-            except:
-                pass
+        elif k in ('services', 'warehouse_inventory'):
+            # Handle JSONB - could be dict, list, or string
+            if isinstance(v, str):
+                try:
+                    d[k] = json.loads(v)
+                except:
+                    d[k] = {} if k == 'services' else []
+            elif v is None:
+                d[k] = {} if k == 'services' else []
     return d
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -632,7 +636,7 @@ async def import_product_from_catalog(
         await conn.execute('''
             INSERT INTO products (id, supplier_id, supplier_sku, product_name, description, brand, category, base_price, last_synced, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $9)
-        ''', product_id, supplier_id, product_sku, p.get('name', ''), p.get('description', ''),
+        ''', product_id, supplier_id, product_sku, p.get('product_name', ''), p.get('description', ''),
             p.get('brand', ''), p.get('category', ''), float(p.get('price', 0) or 0), utc_now())
         
         # Insert variants
@@ -642,7 +646,7 @@ async def import_product_from_catalog(
             await conn.execute('''
                 INSERT INTO product_variants (id, product_id, variant_sku, color, size, price, created_at, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-            ''', variant_id, product_id, v.get('sku', ''), v.get('color', ''), v.get('size', ''),
+            ''', variant_id, product_id, v.get('variant_sku', ''), v.get('color', ''), v.get('size', ''),
                 float(v.get('price', 0) or 0), utc_now())
             variants_added += 1
     
@@ -650,7 +654,7 @@ async def import_product_from_catalog(
         "success": True,
         "message": f"Imported product with {variants_added} variants",
         "product_id": product_id,
-        "product_name": p.get('name', ''),
+        "product_name": p.get('product_name', ''),
         "variants_added": variants_added
     }
 
@@ -997,19 +1001,19 @@ async def sync_products_task(supplier_id: str, log_id: str):
                             await conn.execute('''
                                 UPDATE products SET product_name = $1, description = $2, brand = $3, category = $4,
                                     base_price = $5, last_synced = $6, updated_at = $6 WHERE id = $7
-                            ''', p.get('name', ''), p.get('description', ''), p.get('brand', ''),
+                            ''', p.get('product_name', ''), p.get('description', ''), p.get('brand', ''),
                                 p.get('category', ''), float(p.get('price', 0) or 0), utc_now(), product_id)
                         else:
                             await conn.execute('''
                                 INSERT INTO products (id, supplier_id, supplier_sku, product_name, description, brand, category, base_price, last_synced, created_at, updated_at)
                                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $9)
-                            ''', product_id, supplier_id, sku, p.get('name', ''), p.get('description', ''),
+                            ''', product_id, supplier_id, sku, p.get('product_name', ''), p.get('description', ''),
                                 p.get('brand', ''), p.get('category', ''), float(p.get('price', 0) or 0), utc_now())
                         
                         # Handle variants
                         for v in p.get('variants', []):
                             variant_id = new_id()
-                            existing_var = await conn.fetchrow("SELECT id FROM product_variants WHERE product_id = $1 AND variant_sku = $2", product_id, v.get('sku', ''))
+                            existing_var = await conn.fetchrow("SELECT id FROM product_variants WHERE product_id = $1 AND variant_sku = $2", product_id, v.get('variant_sku', ''))
                             
                             if existing_var:
                                 await conn.execute('''
@@ -1019,7 +1023,7 @@ async def sync_products_task(supplier_id: str, log_id: str):
                                 await conn.execute('''
                                     INSERT INTO product_variants (id, product_id, variant_sku, color, size, price, created_at, updated_at)
                                     VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-                                ''', variant_id, product_id, v.get('sku', ''), v.get('color', ''), v.get('size', ''),
+                                ''', variant_id, product_id, v.get('variant_sku', ''), v.get('color', ''), v.get('size', ''),
                                     float(v.get('price', 0) or 0), utc_now())
                 
             except Exception as e:

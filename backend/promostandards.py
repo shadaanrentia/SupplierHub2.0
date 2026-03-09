@@ -293,19 +293,34 @@ class PromoStandardsConnector:
                 tag = el.tag.split('}')[-1] if '}' in el.tag else el.tag
                 if tag == 'ProductPart':
                     variant = {'variant_sku': '', 'color': '', 'size': '', 'country_of_origin': '', 'lead_time': ''}
-                    for child in el.iter():
+                    
+                    # Get direct children of ProductPart
+                    for child in el:
                         ctag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
                         if ctag == 'partId' and child.text:
                             variant['variant_sku'] = child.text.strip()
-                        elif ctag == 'colorName' and child.text:
-                            variant['color'] = child.text.strip()
-                        elif ctag == 'labelSize' and child.text:
-                            variant['size'] = child.text.strip()
                         elif ctag == 'countryOfOrigin' and child.text:
                             variant['country_of_origin'] = child.text.strip()
                         elif ctag == 'leadTime' and child.text:
                             variant['lead_time'] = child.text.strip()
-                    if variant['variant_sku']:
+                        elif ctag == 'ColorArray':
+                            # Color is nested: ColorArray/Color/colorName
+                            for color_el in child:
+                                for color_child in color_el:
+                                    cctag = color_child.tag.split('}')[-1] if '}' in color_child.tag else color_child.tag
+                                    if cctag == 'colorName' and color_child.text:
+                                        variant['color'] = color_child.text.strip()
+                                        break
+                        elif ctag == 'ApparelSize':
+                            # Size is nested: ApparelSize/labelSize
+                            for size_child in child:
+                                stag = size_child.tag.split('}')[-1] if '}' in size_child.tag else size_child.tag
+                                if stag == 'labelSize' and size_child.text:
+                                    variant['size'] = size_child.text.strip()
+                                    break
+                    
+                    # Only add variants with a valid SKU (skip 'DEFAULT' placeholder)
+                    if variant['variant_sku'] and variant['variant_sku'] != 'DEFAULT':
                         product['variants'].append(variant)
 
             return {'success': True, 'product': product}
@@ -464,7 +479,7 @@ class PromoStandardsConnector:
                 tag = el.tag.split('}')[-1] if '}' in el.tag else el.tag
                 if tag == 'MediaContent' and 'Array' not in el.tag:
                     item = {'url': '', 'media_type': 'Image', 'width': None, 'height': None, 'color': '', 'description': ''}
-                    for child in el.iter():
+                    for child in el:
                         ctag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
                         if ctag == 'url' and child.text:
                             item['url'] = child.text.strip()
@@ -484,8 +499,22 @@ class PromoStandardsConnector:
                             item['color'] = child.text.strip()
                         elif ctag == 'description' and child.text:
                             item['description'] = child.text.strip()
+                    
+                    # Handle case where URL field contains multiple URLs (newline-separated)
                     if item['url']:
-                        media.append(item)
+                        url_lines = [u.strip() for u in item['url'].split('\n') if u.strip()]
+                        if len(url_lines) > 1:
+                            # Multiple URLs in single field - create separate media items
+                            for url in url_lines:
+                                if url.startswith('http'):
+                                    media.append({
+                                        'url': url,
+                                        'media_type': item['media_type'],
+                                        'color': item['color'],
+                                        'description': item['description']
+                                    })
+                        else:
+                            media.append(item)
 
             logger.info(f"Got {len(media)} media items for {product_id}")
             return {'success': True, 'media': media}
