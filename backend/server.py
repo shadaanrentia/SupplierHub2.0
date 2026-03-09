@@ -332,17 +332,18 @@ async def _create_sync_log(supplier_id, supplier_name, sync_type, message):
     return log
 
 @api_router.post("/sync/products/{supplier_id}")
-async def sync_products(supplier_id: str, background_tasks: BackgroundTasks):
+async def sync_products(supplier_id: str, background_tasks: BackgroundTasks, limit: int = Query(100, ge=1, le=5000)):
+    """Sync products from supplier. Default limit is 100, max 5000. Use limit=5000 for full sync."""
     supplier = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})
     if not supplier:
         raise HTTPException(404, "Supplier not found")
-    log = await _create_sync_log(supplier_id, supplier.get("supplier_name", ""), "products", "Product sync started")
-    background_tasks.add_task(run_product_sync, supplier, log["id"])
-    return {"sync_log_id": log["id"], "status": "started"}
+    log = await _create_sync_log(supplier_id, supplier.get("supplier_name", ""), "products", f"Product sync started (limit: {limit})")
+    background_tasks.add_task(run_product_sync, supplier, log["id"], limit)
+    return {"sync_log_id": log["id"], "status": "started", "limit": limit}
 
 @api_router.post("/sync/reset/{supplier_id}")
-async def reset_and_sync(supplier_id: str, background_tasks: BackgroundTasks):
-    """Delete all products for a supplier and trigger a fresh sync."""
+async def reset_and_sync(supplier_id: str, background_tasks: BackgroundTasks, limit: int = Query(100, ge=1, le=5000)):
+    """Delete all products for a supplier and trigger a fresh sync. Use limit=5000 for full sync."""
     supplier = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})
     if not supplier:
         raise HTTPException(404, "Supplier not found")
@@ -356,14 +357,15 @@ async def reset_and_sync(supplier_id: str, background_tasks: BackgroundTasks):
     await db.suppliers.update_one({"id": supplier_id}, {"$set": {"products_count": 0, "last_sync_time": None}})
     
     # Start fresh sync
-    log = await _create_sync_log(supplier_id, supplier.get("supplier_name", ""), "products", f"Reset sync: Deleted {deleted_products.deleted_count} products, {deleted_variants.deleted_count} variants. Starting fresh sync...")
-    background_tasks.add_task(run_product_sync, supplier, log["id"])
+    log = await _create_sync_log(supplier_id, supplier.get("supplier_name", ""), "products", f"Reset sync: Deleted {deleted_products.deleted_count} products, {deleted_variants.deleted_count} variants. Starting fresh sync (limit: {limit})...")
+    background_tasks.add_task(run_product_sync, supplier, log["id"], limit)
     
     return {
         "sync_log_id": log["id"], 
         "status": "started",
         "deleted_products": deleted_products.deleted_count,
-        "deleted_variants": deleted_variants.deleted_count
+        "deleted_variants": deleted_variants.deleted_count,
+        "limit": limit
     }
 
 @api_router.post("/sync/inventory/{supplier_id}")
@@ -414,7 +416,7 @@ async def get_sync_log(log_id: str):
 
 
 # ==================== SYNC TASKS ====================
-async def run_product_sync(supplier: dict, sync_log_id: str):
+async def run_product_sync(supplier: dict, sync_log_id: str, limit: int = 100):
     try:
         from promostandards import PromoStandardsConnector
         connector = PromoStandardsConnector(supplier)
@@ -424,9 +426,13 @@ async def run_product_sync(supplier: dict, sync_log_id: str):
             return
 
         product_ids = list(set([p['product_id'] for p in result.get('products', []) if p.get('product_id')]))
+        total_available = len(product_ids)
+        products_to_sync = product_ids[:limit]
         created, updated, errors, error_details = 0, 0, 0, []
 
-        for i, pid in enumerate(product_ids[:100]):
+        await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"message": f"Found {total_available} unique products, syncing {len(products_to_sync)}..."}})
+
+        for i, pid in enumerate(products_to_sync):
             try:
                 pr = connector.get_product(pid)
                 if pr['success'] and pr.get('product'):
@@ -484,15 +490,15 @@ async def run_product_sync(supplier: dict, sync_log_id: str):
                 error_details.append(f"{pid}: {str(e)}")
 
             if (i + 1) % 10 == 0:
-                await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"products_processed": i + 1, "products_created": created, "products_updated": updated, "errors_count": errors, "message": f"Processing {i+1}/{len(product_ids)}..."}})
+                await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {"products_processed": i + 1, "products_created": created, "products_updated": updated, "errors_count": errors, "message": f"Processing {i+1}/{len(products_to_sync)}..."}})
 
         count = await db.products.count_documents({"supplier_id": supplier["id"]})
         await db.suppliers.update_one({"id": supplier["id"]}, {"$set": {"last_sync_time": utc_now(), "products_count": count}})
         await db.sync_logs.update_one({"id": sync_log_id}, {"$set": {
             "status": "completed" if errors == 0 else "completed_with_errors", "completed_at": utc_now(),
-            "products_processed": min(len(product_ids), 100), "products_created": created,
+            "products_processed": len(products_to_sync), "products_created": created,
             "products_updated": updated, "errors_count": errors, "error_details": error_details[:20],
-            "message": f"Done: {created} created, {updated} updated, {errors} errors"
+            "message": f"Done: {created} created, {updated} updated, {errors} errors (synced {len(products_to_sync)}/{total_available})"
         }})
     except Exception as e:
         logger.error(f"Product sync failed: {e}")
