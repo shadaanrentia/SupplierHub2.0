@@ -39,7 +39,8 @@ logger = logging.getLogger(__name__)
 
 # ==================== HELPERS ====================
 def utc_now():
-    return datetime.now(timezone.utc)
+    """Return current UTC time as naive datetime (no timezone info) for PostgreSQL."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 def utc_now_str():
     return datetime.now(timezone.utc).isoformat()
@@ -509,6 +510,149 @@ async def test_supplier(supplier_id: str, user: dict = Depends(get_current_user)
         connector = PromoStandardsConnector(supplier)
         result = connector.test_connection()
         return result
+
+
+@api_router.get("/suppliers/{supplier_id}/catalog")
+async def search_supplier_catalog(
+    supplier_id: str,
+    search: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    get_details: bool = Query(False),
+    user: dict = Depends(get_current_user)
+):
+    """Search the supplier's catalog directly via PromoStandards API.
+    
+    By default returns just SKUs from GetProductSellable (fast).
+    Set get_details=true to fetch full product details (slower).
+    """
+    from promostandards import PromoStandardsConnector
+    
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM suppliers WHERE id = $1", supplier_id)
+        if not row:
+            raise HTTPException(404, "Supplier not found")
+        supplier = row_to_dict(row)
+        
+        # Get existing product SKUs to mark which are already imported
+        existing_rows = await conn.fetch("SELECT supplier_sku FROM products WHERE supplier_id = $1", supplier_id)
+        existing_skus = set(r['supplier_sku'] for r in existing_rows)
+    
+    connector = PromoStandardsConnector(supplier)
+    
+    # Get all sellable products from the supplier
+    result = connector.get_sellable_products()
+    if not result.get('success'):
+        raise HTTPException(500, f"Failed to fetch catalog: {result.get('error')}")
+    
+    all_products = result.get('products', [])
+    
+    # Get unique product IDs
+    unique_skus = list(set(p['product_id'] for p in all_products))
+    total_count = len(unique_skus)
+    
+    # Filter by search query if provided
+    if search:
+        search_lower = search.lower()
+        unique_skus = [sku for sku in unique_skus if search_lower in sku.lower()]
+    
+    # Limit results
+    unique_skus = unique_skus[:limit]
+    
+    # Build product list
+    products = []
+    
+    if get_details:
+        # Fetch full product details for each SKU (slower)
+        for sku in unique_skus:
+            product_data = connector.get_product(sku)
+            if product_data.get('success') and product_data.get('product'):
+                p = product_data['product']
+                products.append({
+                    'supplier_sku': sku,
+                    'product_name': p.get('name', ''),
+                    'description': p.get('description', ''),
+                    'brand': p.get('brand', ''),
+                    'category': p.get('category', ''),
+                    'variant_count': len(p.get('variants', [])),
+                    'is_imported': sku in existing_skus
+                })
+    else:
+        # Return just SKUs (fast)
+        for sku in unique_skus:
+            products.append({
+                'supplier_sku': sku,
+                'product_name': '',
+                'description': '',
+                'brand': '',
+                'category': '',
+                'variant_count': 0,
+                'is_imported': sku in existing_skus
+            })
+    
+    return {
+        'products': products,
+        'total_in_catalog': total_count,
+        'showing': len(products),
+        'supplier_name': supplier.get('supplier_name', '')
+    }
+
+
+@api_router.post("/suppliers/{supplier_id}/import-product/{product_sku}")
+async def import_product_from_catalog(
+    supplier_id: str,
+    product_sku: str,
+    user: dict = Depends(get_current_user)
+):
+    """Import a single product from the supplier's catalog into the database."""
+    from promostandards import PromoStandardsConnector
+    
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM suppliers WHERE id = $1", supplier_id)
+        if not row:
+            raise HTTPException(404, "Supplier not found")
+        supplier = row_to_dict(row)
+        
+        # Check if already imported
+        existing = await conn.fetchrow("SELECT id FROM products WHERE supplier_id = $1 AND supplier_sku = $2", supplier_id, product_sku)
+        if existing:
+            return {"success": False, "message": "Product already imported", "product_id": existing['id']}
+    
+    connector = PromoStandardsConnector(supplier)
+    
+    # Fetch product details
+    product_data = connector.get_product(product_sku)
+    if not product_data.get('success') or not product_data.get('product'):
+        raise HTTPException(500, f"Failed to fetch product: {product_data.get('error', 'Unknown error')}")
+    
+    p = product_data['product']
+    product_id = new_id()
+    
+    async with pool.acquire() as conn:
+        # Insert product
+        await conn.execute('''
+            INSERT INTO products (id, supplier_id, supplier_sku, product_name, description, brand, category, base_price, last_synced, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $9)
+        ''', product_id, supplier_id, product_sku, p.get('name', ''), p.get('description', ''),
+            p.get('brand', ''), p.get('category', ''), float(p.get('price', 0) or 0), utc_now())
+        
+        # Insert variants
+        variants_added = 0
+        for v in p.get('variants', []):
+            variant_id = new_id()
+            await conn.execute('''
+                INSERT INTO product_variants (id, product_id, variant_sku, color, size, price, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+            ''', variant_id, product_id, v.get('sku', ''), v.get('color', ''), v.get('size', ''),
+                float(v.get('price', 0) or 0), utc_now())
+            variants_added += 1
+    
+    return {
+        "success": True,
+        "message": f"Imported product with {variants_added} variants",
+        "product_id": product_id,
+        "product_name": p.get('name', ''),
+        "variants_added": variants_added
+    }
 
 
 # ==================== PRODUCTS ====================
