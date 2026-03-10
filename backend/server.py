@@ -1598,6 +1598,49 @@ async def test_odoo_connection(user: dict = Depends(get_current_user)):
     
     return result
 
+
+@api_router.post("/odoo/push-products")
+async def push_to_odoo(user: dict = Depends(get_current_user)):
+    """Push selected products to Odoo ERP."""
+    from odoo_service import OdooService
+    async with pool.acquire() as conn:
+        settings_row = await conn.fetchrow("SELECT * FROM settings WHERE id = 'system_settings'")
+        if not settings_row:
+            raise HTTPException(400, "Settings not configured")
+        settings = row_to_dict(settings_row)
+        
+        # Check pending products count first
+        pending_count = await conn.fetchval("SELECT COUNT(*) FROM products WHERE selected_for_odoo = TRUE AND odoo_sync_status = 'pending'")
+        
+        if pending_count == 0:
+            return {"status": "no_products", "message": "No products pending sync to Odoo"}
+        
+        products = await conn.fetch("SELECT * FROM products WHERE selected_for_odoo = TRUE AND odoo_sync_status = 'pending'")
+    
+    odoo = OdooService(settings.get('odoo_url'), settings.get('odoo_db'), settings.get('odoo_username'), settings.get('odoo_api_key'))
+    
+    # Test connection first
+    conn_test = odoo.test_connection()
+    if not conn_test.get('connected'):
+        raise HTTPException(400, f"Odoo connection failed: {conn_test.get('message')}")
+    
+    synced = 0
+    failed = 0
+    for p in products:
+        product = row_to_dict(p)
+        result = odoo.create_or_update_product(product)
+        if result.get('success'):
+            async with pool.acquire() as conn:
+                await conn.execute("UPDATE products SET odoo_sync_status = 'synced', odoo_product_id = $1, updated_at = $2 WHERE id = $3",
+                    str(result.get('odoo_id', '')), utc_now(), product['id'])
+            synced += 1
+        else:
+            failed += 1
+            logger.error(f"Failed to push {product.get('supplier_sku')}: {result.get('error')}")
+    
+    return {"status": "completed", "products_to_push": len(products), "synced": synced, "failed": failed}
+
+
 @api_router.post("/odoo/sync-products")
 async def sync_to_odoo(background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     from odoo_service import OdooService
