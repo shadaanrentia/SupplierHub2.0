@@ -26,9 +26,30 @@ class OdooService:
                 'mock_mode': True
             }
         try:
-            common = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/common')
-            version = common.version()
+            # Ensure URL doesn't have trailing slash
+            url = self.url.rstrip('/')
+            
+            logger.info(f"Testing Odoo connection to {url}, db={self.db_name}, user={self.username}")
+            
+            common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common', allow_none=True)
+            
+            # Get version first to verify connectivity
+            try:
+                version = common.version()
+                logger.info(f"Odoo version: {version}")
+            except Exception as e:
+                return {
+                    'success': False,
+                    'connected': False, 
+                    'message': f'Cannot reach Odoo server at {url}. Error: {str(e)}',
+                    'mock_mode': False
+                }
+            
+            # Try authentication - Odoo accepts password OR API key in this field
             uid = common.authenticate(self.db_name, self.username, self.api_key, {})
+            
+            logger.info(f"Authentication result: uid={uid}")
+            
             if uid:
                 self.uid = uid
                 return {
@@ -37,10 +58,20 @@ class OdooService:
                     'message': f'Connected to Odoo {version.get("server_version", "?")}',
                     'mock_mode': False
                 }
-            return {'success': False, 'connected': False, 'message': 'Authentication failed - check credentials', 'mock_mode': False}
+            
+            # Authentication failed - provide helpful message
+            return {
+                'success': False, 
+                'connected': False, 
+                'message': f'Authentication failed. Please verify: 1) Username is your login email (not "Administrator"), 2) Use your Odoo password or API key, 3) Database name "{self.db_name}" is correct',
+                'mock_mode': False
+            }
+            
         except xmlrpc.client.Fault as e:
+            logger.error(f"Odoo XML-RPC fault: {e.faultCode} - {e.faultString}")
             return {'success': False, 'connected': False, 'message': f'Odoo error: {e.faultString}', 'mock_mode': False}
         except Exception as e:
+            logger.error(f"Odoo connection error: {str(e)}")
             return {'success': False, 'connected': False, 'message': f'Connection failed: {str(e)}', 'mock_mode': False}
 
     def create_or_update_product(self, product: dict) -> dict:
