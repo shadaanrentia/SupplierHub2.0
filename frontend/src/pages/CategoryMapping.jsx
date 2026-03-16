@@ -7,7 +7,7 @@ import { Checkbox } from "../components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { RefreshCw, FolderTree, ArrowRight, Check, X } from "lucide-react";
 
-const API = process.env.REACT_APP_BACKEND_URL;
+const API = process.env.REACT_APP_BACKEND_URL + "/api";
 
 export default function CategoryMapping() {
   const [odooCategories, setOdooCategories] = useState([]);
@@ -49,10 +49,16 @@ export default function CategoryMapping() {
     setSyncing(true);
     try {
       const res = await axios.post(`${API}/odoo/sync-categories`);
-      toast.success(`Synced ${res.data.synced} categories from Odoo`);
-      fetchData();
+      if (res.data.success) {
+        toast.success(`Synced ${res.data.synced} categories from Odoo`);
+        fetchData();
+      } else {
+        toast.error(res.data.error || "Failed to sync categories");
+      }
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed to sync categories");
+      console.error("Sync error:", e);
+      const errorMsg = e.response?.data?.detail || e.response?.data?.error || e.message || "Failed to sync categories";
+      toast.error(errorMsg);
     } finally {
       setSyncing(false);
     }
