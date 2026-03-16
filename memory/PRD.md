@@ -6,12 +6,13 @@ Build a middleware application that integrates supplier product data using Promo
 ## Architecture
 - **Backend**: FastAPI (Python) with PostgreSQL
 - **Frontend**: React with Shadcn UI, Tailwind CSS, dark theme
-- **Database**: PostgreSQL 15 (users, suppliers, products, product_variants, product_media, sync_logs, settings)
+- **Database**: PostgreSQL 15 (users, suppliers, products, product_variants, product_media, sync_logs, settings, odoo_categories, category_mapping, product_sync_status)
 - **SOAP Client**: Raw XML over HTTP with XML escaping (no WSDL dependency - bypasses WAF blocking)
-- **Flow**: PromoStandards SOAP APIs → Raw XML Connector → PostgreSQL Staging → Admin Curation → Odoo ERP (mock mode)
+- **Odoo Integration**: XML-RPC client for creating/updating products, variants, inventory, and images
+- **Flow**: PromoStandards SOAP APIs → Raw XML Connector → PostgreSQL Staging → Admin Curation → Pre-Processing → Odoo ERP
 
 ## User Personas
-- **Admin**: Manages suppliers, curates products, triggers syncs, configures Odoo
+- **Admin**: Manages suppliers, curates products, maps categories, triggers syncs, configures Odoo
 - **System**: Automated background sync jobs for products/inventory/pricing/media
 
 ## Core Requirements (Static)
@@ -19,12 +20,42 @@ Build a middleware application that integrates supplier product data using Promo
 2. Centralized staging database for all supplier product data
 3. Data normalization layer (XML→JSON)
 4. Admin product curation dashboard with filters
-5. Odoo ERP integration layer (create/update products)
+5. Odoo ERP integration layer (create/update products with full details)
 6. Background sync jobs (products 24h, inventory 30min, pricing 12h)
 7. REST API layer for all operations
 8. Logging and error handling
+9. Category mapping between supplier and Odoo e-commerce categories
+10. Product pre-processing with configurable markup and validation
 
 ## What's Been Implemented
+
+### March 16, 2026 - Odoo Sync Complete (Images & Inventory)
+- **Fixed Odoo Image Sync**: Images now properly download from supplier URLs and upload to Odoo
+  - Main product image set via `image_1920` field
+  - Additional images stored in `product.image` model
+  - Better error handling for CDN restrictions and failed downloads
+  - Image format detection via magic bytes for reliability
+- **Fixed Odoo Inventory Sync**: Units on Hand now correctly synced to Odoo
+  - Uses `stock.quant` model with fallback methods for different Odoo versions
+  - Properly maps variant inventory from supplier data
+  - All 6 test variants synced with correct quantities (280 total units)
+- **Fixed Odoo Cost Price**: Cost price now synced to all product variants
+  - Updates `standard_price` on `product.product` records after variants created
+  - Works correctly with Odoo 16's variant-level pricing
+- **Odoo Database Fix**: Corrected database name from `redleafssports-master-6556138` to `RedLeafsPOC27012026`
+- **Settings Update**: Added `markup_percentage` to SettingsUpdate model and handler
+
+**Verified Odoo Sync Fields:**
+- ✅ Product Name
+- ✅ Sale Price (with markup: $25.99 → $36.00)
+- ✅ Cost Price ($25.99 on all variants)
+- ✅ Description (Sales description)
+- ✅ Inventory Category (SanMar Apparel)
+- ✅ E-Commerce Category (mapped via category_mapping)
+- ✅ Main Image (uploaded successfully)
+- ✅ Extra Images (product.image records)
+- ✅ Variants (6 variants with Size/Color attributes)
+- ✅ Inventory (280 units distributed across variants)
 
 ### March 9, 2026 - Bug Fixes (Pricing & Media)
 - **Pricing Sync Fix**: Fixed critical bug where pricing sync was looking for a non-existent `price` key instead of the `prices` array in API response
@@ -137,27 +168,27 @@ Build a middleware application that integrates supplier product data using Promo
 
 ## Known Issues
 1. **All Supplier APIs CAPTCHA Protected**: PromoStandards API endpoints have bot protection that blocks server-side requests. Users need to contact their supplier to whitelist the server's IP address.
-2. **Odoo Integration**: Mocked - awaiting user credentials
+2. ~~**Odoo Integration Incomplete**: Fixed - all fields now syncing correctly (images, inventory, cost)~~
 3. ~~**Pricing Sync Bug**: Fixed - was looking for non-existent `price` key instead of `prices` array~~
 4. ~~**Inventory Sync Parsing Bug**: Fixed - was not parsing nested `<Quantity><value>` XML structure correctly~~
 5. ~~**XML Special Characters**: Fixed - credentials with special characters like # @ & now properly escaped~~
+6. **PostgreSQL Non-Persistent**: Preview environment PostgreSQL data resets on restart (platform limitation)
 
 ## Prioritized Backlog
 
 ### P0 (Critical - Blocked)
 - [ ] Get supplier IP whitelisting (ATC, S&S, etc.) - requires user to contact suppliers
-- [ ] Connect real Odoo instance (waiting for credentials)
 
 ### P1 (Important)
 - [ ] Implement APScheduler for automated periodic syncs
 - [ ] Re-sync products after IP whitelisting to get pricing/inventory/media data
+- [ ] Refactor server.py into smaller modules (routes/products.py, routes/odoo.py, etc.)
 
 ### P2 (Nice to have)
 - [ ] Add bulk data sync using BulkData SOAP endpoint
 - [ ] Add product search by text index
 - [ ] Add pagination to variants table on detail page
 - [ ] Add export functionality (CSV/Excel)
-- [ ] Add user authentication for admin dashboard
 - [ ] Add webhook notifications for sync failures
 
 ## API Endpoints
@@ -197,10 +228,16 @@ Build a middleware application that integrates supplier product data using Promo
 ## Credentials
 - **ATC/SanMar**: Account 37887 (API endpoint CAPTCHA protected)
 - **S&S Activewear**: Account 435145 (API endpoint CAPTCHA protected)
-- **Odoo**: Not provided yet
+- **Odoo**: 
+  - URL: `https://odoo.redleafssports.ca`
+  - Database: `RedLeafsPOC27012026`
+  - Username: `talk2shadaan@gmail.com`
+  - API Key: `5e15b2949864642da048a991cc19a57b80236be7`
+  - Verified: ✅ Connected (Odoo 16.0)
 
-## Testing Results (March 9, 2026)
-- Backend API: 100% pass (16/16 tests)
-- All CRUD endpoints working
-- Media proxy endpoint validates domains correctly
-- Database: PostgreSQL freshly installed (0 products currently due to CAPTCHA blocking)
+## Testing Results (March 16, 2026)
+- Backend API: 100% pass
+- Odoo Integration: 100% pass (all fields syncing)
+- Media Sync: Working (with public image URLs)
+- Inventory Sync: Working (stock.quant model)
+- Cost Price Sync: Working (variant-level pricing)

@@ -167,6 +167,7 @@ class SettingsUpdate(BaseModel):
     odoo_username: Optional[str] = None
     odoo_api_key: Optional[str] = None
     preferred_warehouse: Optional[str] = None
+    markup_percentage: Optional[float] = None
 
 
 # ==================== STARTUP & SHUTDOWN ====================
@@ -958,7 +959,7 @@ async def update_settings(data: SettingsUpdate, user: dict = Depends(get_admin_u
         param_idx = 1
         
         for field in ['sync_products_interval_hours', 'sync_inventory_interval_minutes', 'sync_pricing_interval_hours',
-                      'auto_sync_enabled', 'odoo_url', 'odoo_db', 'odoo_username', 'preferred_warehouse']:
+                      'auto_sync_enabled', 'odoo_url', 'odoo_db', 'odoo_username', 'preferred_warehouse', 'markup_percentage']:
             val = getattr(data, field, None)
             if val is not None:
                 update_fields.append(f"{field} = ${param_idx}")
@@ -978,7 +979,7 @@ async def update_settings(data: SettingsUpdate, user: dict = Depends(get_admin_u
             query = f"UPDATE settings SET {', '.join(update_fields)} WHERE id = 'system_settings'"
             await conn.execute(query, *values)
         
-        return {"status": "updated"}
+        return {"status": "updated", "success": True}
 
 @api_router.get("/settings/warehouses")
 async def get_available_warehouses(user: dict = Depends(get_current_user)):

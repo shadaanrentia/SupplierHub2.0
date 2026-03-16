@@ -92,6 +92,10 @@ class OdooService:
             models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object', allow_none=True)
             
             sku = product.get('supplier_sku', '')
+            cost_price = float(product.get('cost_price', 0) or 0)
+            sale_price = float(product.get('base_price', 0) or 0)
+            
+            logger.info(f"Syncing product {sku}: Cost={cost_price}, Sale={sale_price}")
             
             # Search for existing product by SKU
             existing = models.execute_kw(
@@ -114,8 +118,8 @@ class OdooService:
                 'default_code': sku,
                 'description': product.get('description', ''),  # Internal description
                 'description_sale': product.get('description', ''),  # Sales description (shown to customers)
-                'list_price': float(product.get('base_price', 0) or 0),  # Sale price
-                'standard_price': float(product.get('cost_price', 0) or 0),  # Cost price
+                'list_price': sale_price,  # Sale price
+                'standard_price': cost_price,  # Cost price
                 'type': 'product',  # Storable product
                 'sale_ok': True,
                 'purchase_ok': True,
@@ -141,10 +145,15 @@ class OdooService:
                 odoo_id = models.execute_kw(self.db_name, self.uid, self.api_key, 'product.template', 'create', [vals])
                 logger.info(f"Created product {sku} (Odoo ID: {odoo_id})")
             
-            # Handle variants if provided
+            # Handle variants if provided (creates the variant combinations)
             variants = product.get('variants', [])
             if variants:
                 self._sync_variants(models, odoo_id, variants)
+            
+            # Update cost price on product variants AFTER they've been created
+            # This is more reliable in Odoo 16+ where standard_price on template may not propagate
+            if cost_price > 0:
+                self._update_variant_costs(models, odoo_id, cost_price)
             
             # Handle images if provided
             images = product.get('images', [])
@@ -159,6 +168,27 @@ class OdooService:
         except Exception as e:
             logger.error(f"Odoo push error: {e}")
             return {'success': False, 'error': str(e)}
+
+    def _update_variant_costs(self, models, template_id: int, cost_price: float):
+        """Update cost price on all product variants (product.product records)."""
+        try:
+            # Get all variants for this template
+            variants = models.execute_kw(
+                self.db_name, self.uid, self.api_key,
+                'product.product', 'search',
+                [[['product_tmpl_id', '=', template_id]]]
+            )
+            
+            if variants:
+                # Update standard_price on all variants
+                models.execute_kw(
+                    self.db_name, self.uid, self.api_key,
+                    'product.product', 'write',
+                    [variants, {'standard_price': cost_price}]
+                )
+                logger.info(f"Updated cost price to {cost_price} for {len(variants)} variants of template {template_id}")
+        except Exception as e:
+            logger.warning(f"Error updating variant costs: {e}")
 
     def _get_or_create_category(self, models, category_name: str) -> int:
         """Get or create an inventory product category."""
@@ -240,10 +270,13 @@ class OdooService:
             return None
 
     def _sync_variants(self, models, template_id: int, variants: list):
-        """Sync product variants with attributes (Size, Color)."""
+        """Sync product variants with attributes (Size, Color) and inventory."""
         try:
             if not variants:
+                logger.info(f"No variants to sync for template {template_id}")
                 return
+            
+            logger.info(f"Syncing {len(variants)} variants for template {template_id}")
             
             # Get or create Size and Color attributes
             size_attr_id = self._get_or_create_attribute(models, 'Size')
@@ -257,6 +290,8 @@ class OdooService:
                     sizes.add(v['size'])
                 if v.get('color'):
                     colors.add(v['color'])
+            
+            logger.info(f"Found {len(sizes)} unique sizes and {len(colors)} unique colors")
             
             # Create attribute values
             size_value_ids = {}
@@ -293,6 +328,7 @@ class OdooService:
                         'value_ids': [(6, 0, list(size_value_ids.values()))]
                     }]
                 )
+                logger.info(f"Added Size attribute line with {len(sizes)} values")
             
             # Add Color attribute line if has colors and not already added
             if colors and color_attr_id not in existing_attr_ids:
@@ -305,8 +341,8 @@ class OdooService:
                         'value_ids': [(6, 0, list(color_value_ids.values()))]
                     }]
                 )
+                logger.info(f"Added Color attribute line with {len(colors)} values")
             
-            # Update variant SKUs and inventory
             # Get all product variants for this template
             product_variants = models.execute_kw(
                 self.db_name, self.uid, self.api_key,
@@ -315,87 +351,298 @@ class OdooService:
                 {'fields': ['id', 'product_template_attribute_value_ids', 'default_code']}
             )
             
-            # Map variants by their attribute combination
+            logger.info(f"Found {len(product_variants)} Odoo variants for template {template_id}")
+            
+            # Get default warehouse/location for inventory
+            warehouse = self._get_default_warehouse(models)
+            stock_location_id = warehouse.get('lot_stock_id', [False, ''])[0] if warehouse else False
+            
+            if not stock_location_id:
+                logger.warning("No stock location found - inventory will not be updated")
+            else:
+                logger.info(f"Using stock location ID: {stock_location_id}")
+            
+            # Calculate total inventory from variants
+            total_inventory = 0
+            inventory_updated = 0
+            
+            # Map and update variants with SKU and inventory
             for variant in variants:
                 variant_sku = variant.get('variant_sku', '')
-                variant_color = variant.get('color', '')
-                variant_size = variant.get('size', '')
-                variant_qty = variant.get('inventory', 0) or variant.get('inventory_quantity', 0)
+                # Get inventory from multiple possible field names
+                variant_qty = int(variant.get('inventory', 0) or variant.get('inventory_quantity', 0) or 0)
+                total_inventory += variant_qty
                 
-                # Find matching Odoo variant (this is complex - simplified approach: update by SKU if exists)
+                # Try to find or assign variant
                 for pv in product_variants:
-                    if not pv.get('default_code'):
-                        # Set SKU on first available variant
+                    if pv.get('default_code') == variant_sku:
+                        # Found matching variant, update inventory
+                        if stock_location_id:
+                            self._update_inventory(models, pv['id'], stock_location_id, variant_qty)
+                            inventory_updated += 1
+                        break
+                    elif not pv.get('default_code'):
+                        # Assign SKU to first available variant without SKU
                         models.execute_kw(
                             self.db_name, self.uid, self.api_key,
                             'product.product', 'write',
                             [[pv['id']], {'default_code': variant_sku}]
                         )
+                        logger.debug(f"Assigned SKU {variant_sku} to variant {pv['id']}")
+                        # Update inventory for this variant
+                        if stock_location_id:
+                            self._update_inventory(models, pv['id'], stock_location_id, variant_qty)
+                            inventory_updated += 1
+                        product_variants.remove(pv)  # Don't reuse this variant
                         break
             
-            logger.info(f"Synced {len(variants)} variants for template {template_id}")
+            logger.info(f"Synced {len(variants)} variants for template {template_id}. Total inventory: {total_inventory}, Updated: {inventory_updated}")
             
         except Exception as e:
-            logger.error(f"Error syncing variants: {e}")
+            logger.error(f"Error syncing variants: {e}", exc_info=True)
+
+    def _get_default_warehouse(self, models) -> dict:
+        """Get the default warehouse."""
+        try:
+            warehouses = models.execute_kw(
+                self.db_name, self.uid, self.api_key,
+                'stock.warehouse', 'search_read',
+                [[]],
+                {'fields': ['id', 'name', 'lot_stock_id'], 'limit': 1}
+            )
+            return warehouses[0] if warehouses else None
+        except Exception as e:
+            logger.error(f"Error getting warehouse: {e}")
+            return None
+
+    def _update_inventory(self, models, product_id: int, location_id: int, quantity: int):
+        """Update inventory (Units on Hand) for a product variant.
+        
+        Uses multiple approaches for compatibility with different Odoo versions:
+        1. Try stock.quant direct update (Odoo 14+)
+        2. Fallback to inventory_quantity field on stock.quant
+        3. Fallback to stock.change.product.qty wizard
+        """
+        try:
+            logger.info(f"Updating inventory for product {product_id} at location {location_id}: {quantity} units")
+            
+            # Method 1: Try updating stock.quant directly
+            existing_quant = models.execute_kw(
+                self.db_name, self.uid, self.api_key,
+                'stock.quant', 'search_read',
+                [[['product_id', '=', product_id], ['location_id', '=', location_id]]],
+                {'fields': ['id', 'quantity', 'inventory_quantity'], 'limit': 1}
+            )
+            
+            if existing_quant:
+                quant_id = existing_quant[0]['id']
+                try:
+                    # Try direct quantity update first
+                    models.execute_kw(
+                        self.db_name, self.uid, self.api_key,
+                        'stock.quant', 'write',
+                        [[quant_id], {'inventory_quantity': quantity}]
+                    )
+                    # Apply the inventory adjustment
+                    try:
+                        models.execute_kw(
+                            self.db_name, self.uid, self.api_key,
+                            'stock.quant', 'action_apply_inventory',
+                            [[quant_id]]
+                        )
+                    except Exception:
+                        # If action_apply_inventory doesn't exist, try setting quantity directly
+                        models.execute_kw(
+                            self.db_name, self.uid, self.api_key,
+                            'stock.quant', 'write',
+                            [[quant_id], {'quantity': quantity}]
+                        )
+                    logger.info(f"Updated existing quant {quant_id} for product {product_id}: {quantity} units")
+                    return
+                except Exception as e:
+                    logger.warning(f"Direct quant update failed: {e}, trying alternative method")
+            
+            # Method 2: Create new quant record
+            try:
+                quant_vals = {
+                    'product_id': product_id,
+                    'location_id': location_id,
+                    'inventory_quantity': quantity,
+                }
+                new_quant_id = models.execute_kw(
+                    self.db_name, self.uid, self.api_key,
+                    'stock.quant', 'create',
+                    [quant_vals]
+                )
+                # Try to apply inventory
+                try:
+                    models.execute_kw(
+                        self.db_name, self.uid, self.api_key,
+                        'stock.quant', 'action_apply_inventory',
+                        [[new_quant_id]]
+                    )
+                except Exception:
+                    # If apply fails, set quantity directly
+                    models.execute_kw(
+                        self.db_name, self.uid, self.api_key,
+                        'stock.quant', 'write',
+                        [[new_quant_id], {'quantity': quantity}]
+                    )
+                logger.info(f"Created new quant {new_quant_id} for product {product_id}: {quantity} units")
+                return
+            except Exception as e:
+                logger.warning(f"Quant creation failed: {e}, trying wizard method")
+            
+            # Method 3: Use stock.change.product.qty wizard (older Odoo versions)
+            try:
+                wizard_id = models.execute_kw(
+                    self.db_name, self.uid, self.api_key,
+                    'stock.change.product.qty', 'create',
+                    [{
+                        'product_id': product_id,
+                        'new_quantity': quantity,
+                        'location_id': location_id,
+                    }]
+                )
+                models.execute_kw(
+                    self.db_name, self.uid, self.api_key,
+                    'stock.change.product.qty', 'change_product_qty',
+                    [[wizard_id]]
+                )
+                logger.info(f"Used wizard to set inventory for product {product_id}: {quantity} units")
+            except Exception as e:
+                logger.error(f"All inventory update methods failed for product {product_id}: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error updating inventory for product {product_id}: {e}", exc_info=True)
 
     def _sync_images(self, models, template_id: int, images: list):
-        """Sync product images to Odoo."""
+        """Sync product images to Odoo.
+        
+        Downloads images from supplier URLs and uploads them to Odoo.
+        First image becomes the main product image (image_1920),
+        additional images go to product.image records.
+        """
         import base64
         import requests
         
         try:
             if not images:
+                logger.info(f"No images to sync for template {template_id}")
                 return
             
-            for i, img in enumerate(images):
+            logger.info(f"Starting image sync for template {template_id}: {len(images)} images available")
+            
+            synced_count = 0
+            failed_urls = []
+            
+            # Sort images to prioritize primary images first
+            sorted_images = sorted(images, key=lambda x: not x.get('is_primary', False))
+            
+            for i, img in enumerate(sorted_images[:5]):  # Limit to 5 images
                 img_url = img.get('url', '')
                 if not img_url:
+                    logger.warning(f"Image {i} has no URL, skipping")
                     continue
                 
+                logger.info(f"Processing image {i+1}/{min(len(sorted_images), 5)}: {img_url[:100]}...")
+                
                 try:
-                    # Download image
+                    # Download image with better headers to bypass CDN restrictions
                     headers = {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'image/*,*/*;q=0.8',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Connection': 'keep-alive',
                     }
-                    response = requests.get(img_url, headers=headers, timeout=30)
                     
-                    if response.status_code == 200 and 'image' in response.headers.get('content-type', ''):
+                    # Try to extract referer from URL
+                    try:
+                        url_parts = img_url.split('/')
+                        if len(url_parts) >= 3:
+                            headers['Referer'] = f"{url_parts[0]}//{url_parts[2]}/"
+                    except Exception:
+                        pass
+                    
+                    response = requests.get(img_url, headers=headers, timeout=30, allow_redirects=True)
+                    
+                    content_type = response.headers.get('content-type', '').lower()
+                    content_length = len(response.content) if response.content else 0
+                    
+                    logger.debug(f"Response: status={response.status_code}, content-type={content_type}, size={content_length}")
+                    
+                    # Check if we got an actual image
+                    is_image = False
+                    if response.status_code == 200 and content_length > 1000:  # At least 1KB
+                        # Check content type
+                        if 'image' in content_type:
+                            is_image = True
+                        # Check magic bytes for common image formats
+                        elif response.content:
+                            magic = response.content[:8]
+                            if (magic.startswith(b'\xff\xd8\xff') or  # JPEG
+                                magic.startswith(b'\x89PNG') or       # PNG
+                                magic.startswith(b'GIF8') or          # GIF
+                                magic.startswith(b'RIFF') or          # WebP
+                                magic.startswith(b'<svg')):           # SVG (will likely fail in Odoo)
+                                is_image = True
+                    
+                    if is_image:
                         img_base64 = base64.b64encode(response.content).decode('utf-8')
                         
-                        if i == 0:
-                            # First image is the main product image
+                        if synced_count == 0:
+                            # First successful image is the main product image
                             models.execute_kw(
                                 self.db_name, self.uid, self.api_key,
                                 'product.template', 'write',
                                 [[template_id], {'image_1920': img_base64}]
                             )
-                            logger.info(f"Set main image for template {template_id}")
+                            logger.info(f"Set main image for template {template_id} ({content_length} bytes)")
+                            synced_count += 1
                         else:
                             # Additional images go to product.image
                             try:
+                                img_name = img.get('description', '') or f'Image {synced_count + 1}'
                                 models.execute_kw(
                                     self.db_name, self.uid, self.api_key,
                                     'product.image', 'create',
                                     [{
                                         'product_tmpl_id': template_id,
-                                        'name': f'Image {i+1}',
+                                        'name': img_name,
                                         'image_1920': img_base64,
                                     }]
                                 )
+                                logger.info(f"Added extra image '{img_name}' for template {template_id}")
+                                synced_count += 1
                             except Exception as img_err:
-                                logger.warning(f"Could not add extra image: {img_err}")
+                                logger.warning(f"Could not add extra image to Odoo: {img_err}")
                     else:
-                        logger.warning(f"Failed to download image {img_url}: HTTP {response.status_code}")
+                        failed_urls.append(img_url)
+                        if response.status_code != 200:
+                            logger.warning(f"Failed to download image: HTTP {response.status_code}")
+                        elif content_length <= 1000:
+                            logger.warning(f"Response too small ({content_length} bytes), likely not an image")
+                        else:
+                            logger.warning(f"Response doesn't appear to be an image (content-type: {content_type})")
                         
+                except requests.Timeout:
+                    logger.warning(f"Timeout downloading image: {img_url[:100]}")
+                    failed_urls.append(img_url)
                 except requests.RequestException as e:
-                    logger.warning(f"Error downloading image {img_url}: {e}")
-                    continue
+                    logger.warning(f"Error downloading image {img_url[:100]}: {e}")
+                    failed_urls.append(img_url)
             
-            logger.info(f"Synced {len(images)} images for template {template_id}")
+            if synced_count > 0:
+                logger.info(f"Successfully synced {synced_count} images for template {template_id}")
+            else:
+                logger.warning(f"No images could be synced for template {template_id}. Failed URLs: {len(failed_urls)}")
+            
+            if failed_urls:
+                logger.debug(f"Failed image URLs: {failed_urls[:3]}...")  # Log first 3 failed URLs
             
         except Exception as e:
-            logger.error(f"Error syncing images: {e}")
+            logger.error(f"Error syncing images for template {template_id}: {e}", exc_info=True)
 
     def get_ecommerce_categories(self) -> dict:
         """Fetch all e-commerce product categories from Odoo."""
