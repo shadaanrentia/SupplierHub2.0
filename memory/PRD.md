@@ -29,6 +29,20 @@ Build a middleware application that integrates supplier product data using Promo
 
 ## What's Been Implemented
 
+### March 16, 2026 - BulkData Sync Feature Added
+- **New Feature: BulkData Service 1.0 Integration**
+  - Added `get_bulk_data()` method to `promostandards.py`
+  - Downloads all products with images in a single API call
+  - Limited to once per day per account (error 125 for rate limiting)
+  - Auto-detects supplier endpoint style from base URL (atc, ss, alphabroder, generic)
+- **New Endpoint**: `/api/sync/bulk-data/{supplier_id}` - triggers BulkData sync
+- **New UI Button**: "Bulk Data" (purple) on Sync Jobs page
+- **Image Storage**: URLs stored in database even if download fails (for retry capability)
+- **Tested with Sandbox**: Successfully synced 2 products from ATC sandbox to database and Odoo
+  - Products: ATC 1000 T-SHIRT (2 variants), DISCONTINUED GILDAN® ULTRA COTTON® T-SHIRT (1 variant)
+  - Inventory synced correctly (125, 200, 452 units)
+  - Cost and sale prices synced correctly
+
 ### March 16, 2026 - Odoo Sync Complete (Images & Inventory)
 - **Fixed Odoo Image Sync**: Images now properly download from supplier URLs and upload to Odoo
   - Main product image set via `image_1920` field

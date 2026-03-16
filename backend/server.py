@@ -1635,10 +1635,10 @@ async def sync_bulk_data_task(supplier_id: str, log_id: str):
                         )
                         
                         if existing_media == 0:
-                            # Download the image
+                            # Try to download the image
                             img_result = connector.download_image(image_url)
                             if img_result.get('success'):
-                                # Store in database
+                                # Store in database with base64 data
                                 await conn.execute('''
                                     INSERT INTO product_media (id, product_id, media_type, url, description, is_primary, image_base64, created_at)
                                     VALUES ($1, $2, 'image', $3, $4, TRUE, $5, NOW())
@@ -1646,6 +1646,12 @@ async def sync_bulk_data_task(supplier_id: str, log_id: str):
                                 ''', new_id(), product_id, image_url, f"BulkData image for {style}", img_result.get('image_data', ''))
                                 images_downloaded += 1
                             else:
+                                # Still store the URL so we have a reference (can retry later)
+                                await conn.execute('''
+                                    INSERT INTO product_media (id, product_id, media_type, url, description, is_primary, created_at)
+                                    VALUES ($1, $2, 'image', $3, $4, TRUE, NOW())
+                                    ON CONFLICT DO NOTHING
+                                ''', new_id(), product_id, image_url, f"BulkData image for {style} (download failed)")
                                 images_failed += 1
                                 logger.warning(f"Failed to download image for {style}: {img_result.get('error')}")
                     
