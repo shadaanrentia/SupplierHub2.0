@@ -522,9 +522,13 @@ class OdooService:
         Downloads images from supplier URLs and uploads them to Odoo.
         First image becomes the main product image (image_1920),
         additional images go to product.image records.
+        
+        Note: SanMar CDN (media.sanmarcanada.com) blocks server requests.
+        Contact SanMar to whitelist your server IP for image downloads.
         """
         import base64
         import requests
+        import os
         
         try:
             if not images:
@@ -535,12 +539,73 @@ class OdooService:
             
             synced_count = 0
             failed_urls = []
+            blocked_domains = []
             
             # Sort images to prioritize primary images first
             sorted_images = sorted(images, key=lambda x: not x.get('is_primary', False))
             
             for i, img in enumerate(sorted_images[:5]):  # Limit to 5 images
                 img_url = img.get('url', '')
+                img_base64 = img.get('image_base64', '')  # Allow pre-encoded base64 data
+                img_path = img.get('local_path', '')  # Allow local file path
+                
+                # Option 1: Use pre-encoded base64 if provided
+                if img_base64:
+                    try:
+                        if synced_count == 0:
+                            models.execute_kw(
+                                self.db_name, self.uid, self.api_key,
+                                'product.template', 'write',
+                                [[template_id], {'image_1920': img_base64}]
+                            )
+                            logger.info(f"Set main image for template {template_id} from base64 data")
+                            synced_count += 1
+                        else:
+                            img_name = img.get('description', '') or f'Image {synced_count + 1}'
+                            models.execute_kw(
+                                self.db_name, self.uid, self.api_key,
+                                'product.image', 'create',
+                                [{
+                                    'product_tmpl_id': template_id,
+                                    'name': img_name,
+                                    'image_1920': img_base64,
+                                }]
+                            )
+                            synced_count += 1
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Failed to upload base64 image: {e}")
+                
+                # Option 2: Read from local file if provided
+                if img_path and os.path.exists(img_path):
+                    try:
+                        with open(img_path, 'rb') as f:
+                            img_data = base64.b64encode(f.read()).decode('utf-8')
+                        if synced_count == 0:
+                            models.execute_kw(
+                                self.db_name, self.uid, self.api_key,
+                                'product.template', 'write',
+                                [[template_id], {'image_1920': img_data}]
+                            )
+                            logger.info(f"Set main image for template {template_id} from local file")
+                            synced_count += 1
+                        else:
+                            img_name = img.get('description', '') or f'Image {synced_count + 1}'
+                            models.execute_kw(
+                                self.db_name, self.uid, self.api_key,
+                                'product.image', 'create',
+                                [{
+                                    'product_tmpl_id': template_id,
+                                    'name': img_name,
+                                    'image_1920': img_data,
+                                }]
+                            )
+                            synced_count += 1
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Failed to read local image {img_path}: {e}")
+                
+                # Option 3: Download from URL
                 if not img_url:
                     logger.warning(f"Image {i} has no URL, skipping")
                     continue
@@ -619,10 +684,20 @@ class OdooService:
                                 logger.warning(f"Could not add extra image to Odoo: {img_err}")
                     else:
                         failed_urls.append(img_url)
-                        if response.status_code != 200:
+                        # Extract domain for reporting
+                        try:
+                            domain = img_url.split('/')[2]
+                            if domain not in blocked_domains:
+                                blocked_domains.append(domain)
+                        except:
+                            pass
+                        
+                        if response.status_code == 403:
+                            logger.warning(f"Access denied (HTTP 403) for image from {domain} - server IP may need whitelisting")
+                        elif response.status_code != 200:
                             logger.warning(f"Failed to download image: HTTP {response.status_code}")
                         elif content_length <= 1000:
-                            logger.warning(f"Response too small ({content_length} bytes), likely not an image")
+                            logger.warning(f"Response too small ({content_length} bytes), likely CAPTCHA or error page")
                         else:
                             logger.warning(f"Response doesn't appear to be an image (content-type: {content_type})")
                         
@@ -637,12 +712,17 @@ class OdooService:
                 logger.info(f"Successfully synced {synced_count} images for template {template_id}")
             else:
                 logger.warning(f"No images could be synced for template {template_id}. Failed URLs: {len(failed_urls)}")
+                if blocked_domains:
+                    logger.warning(f"BLOCKED DOMAINS: {', '.join(blocked_domains)} - Contact supplier to whitelist server IP for image access")
             
             if failed_urls:
                 logger.debug(f"Failed image URLs: {failed_urls[:3]}...")  # Log first 3 failed URLs
             
+            return {'synced': synced_count, 'failed': len(failed_urls), 'blocked_domains': blocked_domains}
+            
         except Exception as e:
             logger.error(f"Error syncing images for template {template_id}: {e}", exc_info=True)
+            return {'synced': 0, 'failed': 0, 'error': str(e)}
 
     def get_ecommerce_categories(self) -> dict:
         """Fetch all e-commerce product categories from Odoo."""

@@ -2338,7 +2338,8 @@ async def sync_preprocessed_to_odoo(data: dict = None, user: dict = Depends(get_
             "total": len(products),
             "synced": synced,
             "failed": failed,
-            "errors": errors[:10] if errors else []  # Return first 10 errors
+            "errors": errors[:10] if errors else [],  # Return first 10 errors
+            "warning": "Images from SanMar CDN (media.sanmarcanada.com) are blocked. Contact SanMar to whitelist your server IP for image access." if failed == 0 and synced > 0 else None
         }
 
 
