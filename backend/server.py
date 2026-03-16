@@ -1675,6 +1675,7 @@ async def push_to_odoo(user: dict = Depends(get_current_user)):
         if not settings_row:
             raise HTTPException(400, "Settings not configured")
         settings = row_to_dict(settings_row)
+        markup = float(settings.get('markup_percentage') or 40)
         
         # Check pending products count first
         pending_count = await conn.fetchval("SELECT COUNT(*) FROM products WHERE selected_for_odoo = TRUE AND odoo_sync_status = 'pending'")
@@ -1682,7 +1683,12 @@ async def push_to_odoo(user: dict = Depends(get_current_user)):
         if pending_count == 0:
             return {"status": "no_products", "message": "No products pending sync to Odoo"}
         
-        products = await conn.fetch("SELECT * FROM products WHERE selected_for_odoo = TRUE AND odoo_sync_status = 'pending'")
+        products = await conn.fetch('''
+            SELECT p.*, cm.odoo_category_id
+            FROM products p
+            LEFT JOIN category_mapping cm ON p.category = cm.supplier_category_name
+            WHERE p.selected_for_odoo = TRUE AND p.odoo_sync_status = 'pending'
+        ''')
     
     odoo = OdooService(settings.get('odoo_url'), settings.get('odoo_db'), settings.get('odoo_username'), settings.get('odoo_api_key'))
     
@@ -1695,7 +1701,30 @@ async def push_to_odoo(user: dict = Depends(get_current_user)):
     failed = 0
     for p in products:
         product = row_to_dict(p)
-        result = odoo.create_or_update_product(product)
+        
+        # Get variants and images
+        async with pool.acquire() as conn:
+            variants = await conn.fetch("SELECT * FROM product_variants WHERE product_id = $1", product['id'])
+            images = await conn.fetch("SELECT * FROM product_media WHERE product_id = $1", product['id'])
+        
+        # Calculate sale price
+        cost = float(product.get('base_price') or 0)
+        sale_price = calculate_sale_price(cost, markup)
+        
+        # Prepare full product data
+        odoo_data = {
+            'product_name': product.get('product_name'),
+            'supplier_sku': product.get('supplier_sku'),
+            'description': product.get('description'),
+            'base_price': sale_price,
+            'cost_price': cost,
+            'category_id': product.get('odoo_category_id'),
+            'default_category': 'SanMar Apparel',
+            'variants': [row_to_dict(v) for v in variants],
+            'images': [row_to_dict(i) for i in images],
+        }
+        
+        result = odoo.create_or_update_product(odoo_data)
         if result.get('success'):
             async with pool.acquire() as conn:
                 await conn.execute("UPDATE products SET odoo_sync_status = 'synced', odoo_product_id = $1, updated_at = $2 WHERE id = $3",
@@ -1716,18 +1745,47 @@ async def sync_to_odoo(background_tasks: BackgroundTasks, user: dict = Depends(g
         if not settings_row:
             raise HTTPException(400, "Settings not configured")
         settings = row_to_dict(settings_row)
+        markup = float(settings.get('markup_percentage') or 40)
         
         if not settings.get('odoo_connected'):
             raise HTTPException(400, "Odoo not connected")
         
-        products = await conn.fetch("SELECT * FROM products WHERE selected_for_odoo = TRUE AND odoo_sync_status = 'pending'")
+        products = await conn.fetch('''
+            SELECT p.*, cm.odoo_category_id
+            FROM products p
+            LEFT JOIN category_mapping cm ON p.category = cm.supplier_category_name
+            WHERE p.selected_for_odoo = TRUE AND p.odoo_sync_status = 'pending'
+        ''')
     
     odoo = OdooService(settings.get('odoo_url'), settings.get('odoo_db'), settings.get('odoo_username'), settings.get('odoo_api_key'))
     
     synced = 0
     for p in products:
         product = row_to_dict(p)
-        result = odoo.create_or_update_product(product)
+        
+        # Get variants and images
+        async with pool.acquire() as conn:
+            variants = await conn.fetch("SELECT * FROM product_variants WHERE product_id = $1", product['id'])
+            images = await conn.fetch("SELECT * FROM product_media WHERE product_id = $1", product['id'])
+        
+        # Calculate sale price
+        cost = float(product.get('base_price') or 0)
+        sale_price = calculate_sale_price(cost, markup)
+        
+        # Prepare full product data
+        odoo_data = {
+            'product_name': product.get('product_name'),
+            'supplier_sku': product.get('supplier_sku'),
+            'description': product.get('description'),
+            'base_price': sale_price,
+            'cost_price': cost,
+            'category_id': product.get('odoo_category_id'),
+            'default_category': 'SanMar Apparel',
+            'variants': [row_to_dict(v) for v in variants],
+            'images': [row_to_dict(i) for i in images],
+        }
+        
+        result = odoo.create_or_update_product(odoo_data)
         if result.get('success'):
             async with pool.acquire() as conn:
                 await conn.execute("UPDATE products SET odoo_sync_status = 'synced', odoo_product_id = $1, updated_at = $2 WHERE id = $3",
@@ -2222,7 +2280,8 @@ async def sync_preprocessed_to_odoo(data: dict = None, user: dict = Depends(get_
                     'description': product.get('description'),
                     'base_price': sale_price,  # Use calculated sale price
                     'cost_price': cost,
-                    'category_id': product.get('odoo_category_id'),
+                    'category_id': product.get('odoo_category_id'),  # e-commerce category
+                    'default_category': 'SanMar Apparel',  # Inventory category
                     'variants': [row_to_dict(v) for v in variants],
                     'images': [row_to_dict(i) for i in images],
                 }
