@@ -99,6 +99,20 @@ export default function SyncManagement() {
     }
   };
 
+  const triggerBulkDataSync = async (supplierId, supplierName) => {
+    const key = `${supplierId}-bulkdata`;
+    setSyncing((prev) => ({ ...prev, [key]: true }));
+    try {
+      const res = await axios.post(`${API}/sync/bulk-data/${supplierId}`);
+      toast.success(`BulkData sync started for ${supplierName} - downloading products with images`);
+      setTimeout(fetchData, 2000);
+    } catch (e) {
+      toast.error(`Failed to start BulkData sync: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setSyncing((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
   const pushToOdoo = async () => {
     setSyncing((prev) => ({ ...prev, odoo: true }));
     try {
@@ -175,6 +189,22 @@ export default function SyncManagement() {
                         <Zap className="w-3 h-3 mr-1" />
                       )}
                       Sync All
+                    </Button>
+                    {/* BulkData Sync button - downloads products with images */}
+                    <Button
+                      size="sm"
+                      onClick={() => triggerBulkDataSync(s.id, s.supplier_name)}
+                      disabled={syncing[`${s.id}-bulkdata`]}
+                      className="bg-purple-700 hover:bg-purple-600 text-white rounded-none text-xs border border-purple-600"
+                      data-testid={`bulk-data-sync-${s.id}`}
+                      title="Downloads all products with images using BulkData API (once per day)"
+                    >
+                      {syncing[`${s.id}-bulkdata`] ? (
+                        <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                      ) : (
+                        <Package className="w-3 h-3 mr-1" />
+                      )}
+                      Bulk Data
                     </Button>
                   </div>
                 </div>

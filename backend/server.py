@@ -259,6 +259,7 @@ async def startup():
                 url TEXT NOT NULL,
                 description TEXT,
                 is_primary BOOLEAN DEFAULT FALSE,
+                image_base64 TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -1477,6 +1478,207 @@ async def sync_full(supplier_id: str, background_tasks: BackgroundTasks, user: d
     log_id = await _create_sync_log(supplier_id, supplier_name, "full", "Starting full sync...")
     background_tasks.add_task(sync_products_task, supplier_id, log_id)
     return {"status": "started", "log_id": log_id, "task_id": f"products_{supplier_id}"}
+
+
+@api_router.post("/sync/bulk-data/{supplier_id}")
+async def sync_bulk_data(supplier_id: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """
+    Sync products using BulkData Service 1.0.
+    This downloads all product data including images in a single API call.
+    Images from BulkData CAN be downloaded (unlike MediaContent URLs).
+    Limited to once per day per account.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT supplier_name FROM suppliers WHERE id = $1", supplier_id)
+        if not row:
+            raise HTTPException(404, "Supplier not found")
+        supplier_name = row['supplier_name']
+    
+    log_id = await _create_sync_log(supplier_id, supplier_name, "bulk_data", "Starting BulkData sync (products + images)...")
+    background_tasks.add_task(sync_bulk_data_task, supplier_id, log_id)
+    return {"status": "started", "log_id": log_id, "task_id": f"bulkdata_{supplier_id}", "message": "BulkData sync started - this will download products with images"}
+
+
+async def sync_bulk_data_task(supplier_id: str, log_id: str):
+    """Background task to sync products and images using BulkData Service."""
+    import os
+    import base64
+    
+    task_id = f"bulkdata_{supplier_id}"
+    running_syncs[task_id] = {"should_stop": False}
+    
+    try:
+        async with pool.acquire() as conn:
+            # Get supplier config
+            supplier = await conn.fetchrow("SELECT * FROM suppliers WHERE id = $1", supplier_id)
+            if not supplier:
+                await _update_sync_log(log_id, 'failed', 'Supplier not found')
+                return
+            
+            supplier = row_to_dict(supplier)
+            
+            await _update_sync_log(log_id, 'running', 'Connecting to BulkData API...', progress=5)
+            
+            # Initialize connector
+            connector = PromoStandardsConnector(supplier)
+            
+            # Call BulkData API
+            await _update_sync_log(log_id, 'running', 'Calling BulkData API (this may take a while)...', progress=10)
+            result = connector.get_bulk_data()
+            
+            if not result.get('success'):
+                error_msg = result.get('error', 'Unknown error')
+                if result.get('rate_limited'):
+                    await _update_sync_log(log_id, 'failed', f"BulkData rate limited: {error_msg}. This API can only be called once per day. Try again tomorrow.")
+                else:
+                    await _update_sync_log(log_id, 'failed', f"BulkData API error: {error_msg}")
+                return
+            
+            products_data = result.get('products', [])
+            total_products = len(products_data)
+            
+            if total_products == 0:
+                await _update_sync_log(log_id, 'completed', 'No products returned from BulkData API', total=0, processed=0)
+                return
+            
+            await _update_sync_log(log_id, 'running', f'Processing {total_products} products from BulkData...', progress=15, total=total_products)
+            
+            # Group by style to create product records (BulkData returns one row per size/color)
+            products_by_style = {}
+            for p in products_data:
+                style = p.get('style', '')
+                if not style:
+                    continue
+                if style not in products_by_style:
+                    products_by_style[style] = {
+                        'product_name': p.get('product_name', ''),
+                        'description': p.get('description', ''),
+                        'brand': p.get('brand', ''),
+                        'image_url': p.get('image_url', ''),
+                        'variants': []
+                    }
+                # If this row has a better image URL (some rows may be empty), use it
+                if p.get('image_url') and not products_by_style[style]['image_url']:
+                    products_by_style[style]['image_url'] = p.get('image_url')
+                    
+                products_by_style[style]['variants'].append({
+                    'variant_sku': p.get('product_id', ''),
+                    'color': p.get('color', ''),
+                    'size': p.get('size', ''),
+                    'price': p.get('price', 0),
+                    'inventory': p.get('quantity', 0),
+                })
+            
+            logger.info(f"BulkData: {len(products_by_style)} unique products from {total_products} rows")
+            
+            processed = 0
+            images_downloaded = 0
+            images_failed = 0
+            
+            for style, product_data in products_by_style.items():
+                if running_syncs.get(task_id, {}).get("should_stop"):
+                    await _update_sync_log(log_id, 'stopped', f'Sync stopped by user. Processed {processed} products.')
+                    break
+                
+                try:
+                    product_id = new_id()
+                    product_name = product_data['product_name'] or f"Style {style}"
+                    
+                    # Check if product exists
+                    existing = await conn.fetchrow(
+                        "SELECT id FROM products WHERE supplier_id = $1 AND supplier_sku = $2",
+                        supplier_id, style
+                    )
+                    
+                    if existing:
+                        product_id = existing['id']
+                        # Update existing product
+                        await conn.execute('''
+                            UPDATE products SET 
+                                product_name = $1, description = $2, brand = $3, 
+                                base_price = $4, updated_at = NOW()
+                            WHERE id = $5
+                        ''', product_name, product_data['description'], product_data['brand'],
+                            min([v['price'] for v in product_data['variants']] or [0]), product_id)
+                    else:
+                        # Create new product
+                        await conn.execute('''
+                            INSERT INTO products (id, supplier_id, supplier_sku, product_name, description, brand, base_price, created_at, updated_at)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+                        ''', product_id, supplier_id, style, product_name, product_data['description'], 
+                            product_data['brand'], min([v['price'] for v in product_data['variants']] or [0]))
+                    
+                    # Upsert variants
+                    for v in product_data['variants']:
+                        variant_sku = v['variant_sku']
+                        existing_var = await conn.fetchrow(
+                            "SELECT id FROM product_variants WHERE product_id = $1 AND variant_sku = $2",
+                            product_id, variant_sku
+                        )
+                        if existing_var:
+                            await conn.execute('''
+                                UPDATE product_variants SET color = $1, size = $2, price = $3, inventory = $4, updated_at = NOW()
+                                WHERE id = $5
+                            ''', v['color'], v['size'], v['price'], v['inventory'], existing_var['id'])
+                        else:
+                            await conn.execute('''
+                                INSERT INTO product_variants (id, product_id, variant_sku, color, size, price, inventory, created_at, updated_at)
+                                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+                            ''', new_id(), product_id, variant_sku, v['color'], v['size'], v['price'], v['inventory'])
+                    
+                    # Download and save image if available
+                    image_url = product_data.get('image_url', '')
+                    if image_url:
+                        # Check if we already have this image
+                        existing_media = await conn.fetchval(
+                            "SELECT COUNT(*) FROM product_media WHERE product_id = $1", product_id
+                        )
+                        
+                        if existing_media == 0:
+                            # Download the image
+                            img_result = connector.download_image(image_url)
+                            if img_result.get('success'):
+                                # Store in database
+                                await conn.execute('''
+                                    INSERT INTO product_media (id, product_id, media_type, url, description, is_primary, image_base64, created_at)
+                                    VALUES ($1, $2, 'image', $3, $4, TRUE, $5, NOW())
+                                    ON CONFLICT DO NOTHING
+                                ''', new_id(), product_id, image_url, f"BulkData image for {style}", img_result.get('image_data', ''))
+                                images_downloaded += 1
+                            else:
+                                images_failed += 1
+                                logger.warning(f"Failed to download image for {style}: {img_result.get('error')}")
+                    
+                    processed += 1
+                    
+                    # Update progress every 10 products
+                    if processed % 10 == 0:
+                        progress = 15 + int((processed / len(products_by_style)) * 80)
+                        await _update_sync_log(
+                            log_id, 'running', 
+                            f'Processed {processed}/{len(products_by_style)} products, {images_downloaded} images downloaded',
+                            progress=progress, total=len(products_by_style), processed=processed
+                        )
+                        
+                except Exception as e:
+                    logger.error(f"Error processing product {style}: {e}")
+            
+            # Update supplier last_sync
+            await conn.execute("UPDATE suppliers SET last_sync = $1 WHERE id = $2", utc_now(), supplier_id)
+            
+            message = f"BulkData sync complete: {processed} products, {images_downloaded} images downloaded"
+            if images_failed > 0:
+                message += f", {images_failed} image downloads failed"
+            
+            await _update_sync_log(log_id, 'completed', message, progress=100, total=len(products_by_style), processed=processed)
+            
+    except Exception as e:
+        logger.error(f"BulkData sync task error: {e}")
+        await _update_sync_log(log_id, 'failed', f'Error: {str(e)}')
+    finally:
+        running_syncs.pop(task_id, None)
+
+
 
 
 @api_router.post("/sync/stop/{task_id}")

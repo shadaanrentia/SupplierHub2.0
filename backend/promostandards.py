@@ -22,6 +22,7 @@ NS = {
     'ppc_so': 'http://www.promostandards.org/WSDL/PricingAndConfiguration/1.0.0/SharedObjects/',
     'mc': 'http://www.promostandards.org/WSDL/MediaService/1.0.0/',
     'mc_so': 'http://www.promostandards.org/WSDL/MediaService/1.0.0/SharedObjects/',
+    'bd': 'https://edi.atc-apparel.com/bulk-data/',
 }
 
 # Known supplier endpoint patterns (service endpoints, NOT WSDLs)
@@ -32,6 +33,7 @@ SUPPLIER_PATTERNS = {
         "inventory": "{base}/Inventory/v2/InventoryService.svc",
         "pricing": "{base}/PricingAndConfiguration/v1/PricingAndConfigurationService.svc",
         "media": "{base}/MediaContent/v1/MediaContentService.svc",
+        "bulk_data": "{base}/BulkData/v1/BulkDataService.svc",
     },
     "atc": {
         "label": "ATC / SanMar",
@@ -39,6 +41,7 @@ SUPPLIER_PATTERNS = {
         "inventory": "{base}/pstd/inventory2.0/InventoryServiceV2.php",
         "pricing": "{base}/pstd/productpricingconfiguration/PricingAndConfigurationService.php",
         "media": "{base}/pstd/mediacontent1.1/MediaContentService.php",
+        "bulk_data": "{base}/bulk-data/BulkDataService.php",
     },
     "alphabroder": {
         "label": "alphabroder",
@@ -46,6 +49,7 @@ SUPPLIER_PATTERNS = {
         "inventory": "{base}/promostandards/InventoryService/v2.0.0/InventoryService.svc",
         "pricing": "{base}/promostandards/PricingAndConfigurationService/v1.0.0/PricingAndConfigurationService.svc",
         "media": "{base}/promostandards/MediaContentService/v1.1.0/MediaContentService.svc",
+        "bulk_data": "{base}/promostandards/BulkDataService/v1.0.0/BulkDataService.svc",
     },
     "generic": {
         "label": "Generic PromoStandards",
@@ -53,6 +57,7 @@ SUPPLIER_PATTERNS = {
         "inventory": "{base}/inventory/v2/InventoryService.svc",
         "pricing": "{base}/pricingandconfiguration/v1/PricingAndConfigurationService.svc",
         "media": "{base}/mediacontent/v1/MediaContentService.svc",
+        "bulk_data": "{base}/bulkdata/v1/BulkDataService.svc",
     }
 }
 
@@ -139,6 +144,19 @@ class PromoStandardsConnector:
         self._safe_account_id = xml_escape(self.account_id)
         self._safe_password = xml_escape(self.password)
         self._safe_media_password = xml_escape(self.media_password)
+
+        # Auto-detect endpoint style from base URL if not set
+        if not self.endpoint_style and self.base_url:
+            base_lower = self.base_url.lower()
+            if 'atc-apparel' in base_lower or 'sanmar' in base_lower:
+                self.endpoint_style = 'atc'
+            elif 'ssactivewear' in base_lower:
+                self.endpoint_style = 'ss'
+            elif 'alphabroder' in base_lower:
+                self.endpoint_style = 'alphabroder'
+            else:
+                self.endpoint_style = 'generic'
+            logger.debug(f"Auto-detected endpoint style: {self.endpoint_style}")
 
         # Auto-generate endpoints if not explicitly set
         if not self.services and self.base_url and self.endpoint_style:
@@ -531,4 +549,214 @@ class PromoStandardsConnector:
             return {'success': False, 'error': str(e)}
         except Exception as e:
             logger.error(f"getMediaContent error [{product_id}]: {e}")
+            return {'success': False, 'error': str(e)}
+
+
+    def get_bulk_data(self) -> dict:
+        """
+        Get bulk product data using BulkData Service 1.0.
+        This endpoint returns comprehensive product data including image URLs
+        that can be downloaded (unlike MediaContent URLs which are hotlink-blocked).
+        
+        Returns product data with: productId, productName, style, size, color, brand, 
+        weight, quantity, price, salePrice, and importantly - image URLs.
+        
+        IMPORTANT: Limited to once per day per account. Subsequent calls return error 125.
+        """
+        try:
+            endpoint = self._get_endpoint('bulk_data')
+            
+            # BulkData uses a different namespace than other PromoStandards services
+            body_xml = f'''<ns:GetBulkDataRequest xmlns:ns="{NS['bd']}">
+              <ns:wsVersion>1.0.0</ns:wsVersion>
+              <ns:id>{self._safe_account_id}</ns:id>
+              <ns:password>{self._safe_password}</ns:password>
+            </ns:GetBulkDataRequest>'''
+            
+            logger.info(f"Calling BulkData API at {endpoint}")
+            body = _soap_call(endpoint, 'getBulkData', body_xml, timeout=120)  # Longer timeout for large response
+            
+            # Check for service messages (errors)
+            for msg_el in body.iter():
+                tag = msg_el.tag.split('}')[-1] if '}' in msg_el.tag else msg_el.tag
+                if tag == 'ServiceMessage':
+                    code = ''
+                    desc = ''
+                    severity = ''
+                    for child in msg_el.iter():
+                        child_tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+                        text = child.text.strip() if child.text else ''
+                        if child_tag == 'code':
+                            code = text
+                        elif child_tag == 'description':
+                            desc = text
+                        elif child_tag == 'severity':
+                            severity = text
+                    
+                    if code == '125':
+                        logger.warning(f"BulkData rate limit: {desc}")
+                        return {'success': False, 'error': f"Rate limited: {desc}", 'rate_limited': True, 'code': code}
+                    elif severity.lower() == 'error':
+                        logger.error(f"BulkData service error [{code}]: {desc}")
+                        return {'success': False, 'error': f"Service error [{code}]: {desc}", 'code': code}
+            
+            products = []
+            current_product = None
+            
+            for el in body.iter():
+                tag = el.tag.split('}')[-1] if '}' in el.tag else el.tag
+                
+                # Parse product data - look for Product element
+                if tag == 'Product':
+                    if current_product and current_product.get('product_id'):
+                        products.append(current_product)
+                    current_product = {
+                        'product_id': '',
+                        'product_name': '',
+                        'fr_product_name': '',
+                        'description': '',
+                        'style': '',
+                        'size': '',
+                        'color': '',
+                        'fr_color': '',
+                        'brand': '',
+                        'image_url': '',
+                        'weight': None,
+                        'case_size': None,
+                        'quantity': 0,
+                        'price': 0,
+                        'sale_price': 0,
+                        'sale_end_date': '',
+                        'price_group': '',
+                        'youth': False,
+                        'discount_code': ''
+                    }
+                elif current_product is not None:
+                    text = el.text.strip() if el.text else ''
+                    tag_lower = tag.lower()
+                    
+                    if tag_lower == 'productid':
+                        current_product['product_id'] = text
+                    elif tag_lower == 'productname':
+                        current_product['product_name'] = text
+                    elif tag_lower == 'frproductname':
+                        current_product['fr_product_name'] = text
+                    elif tag_lower == 'description':
+                        current_product['description'] = text
+                    elif tag_lower == 'style':
+                        current_product['style'] = text
+                    elif tag_lower == 'size':
+                        current_product['size'] = text
+                    elif tag_lower == 'swatchcolor':
+                        current_product['color'] = text
+                    elif tag_lower == 'frswatchcolor':
+                        current_product['fr_color'] = text
+                    elif tag_lower == 'brand':
+                        current_product['brand'] = text
+                    elif tag_lower == 'image':
+                        current_product['image_url'] = text
+                    elif tag_lower == 'weight' and text:
+                        try:
+                            # Remove any text like "Lbs" from weight
+                            weight_str = text.replace('Lbs', '').replace('(', '').replace(')', '').strip()
+                            current_product['weight'] = float(weight_str)
+                        except ValueError:
+                            pass
+                    elif tag_lower == 'casesize' and text:
+                        try:
+                            current_product['case_size'] = int(text)
+                        except ValueError:
+                            pass
+                    elif tag_lower == 'quantity' and text:
+                        try:
+                            current_product['quantity'] = int(float(text))
+                        except ValueError:
+                            pass
+                    elif tag_lower == 'price' and text:
+                        try:
+                            current_product['price'] = float(text)
+                        except ValueError:
+                            pass
+                    elif tag_lower == 'saleprice' and text:
+                        try:
+                            current_product['sale_price'] = float(text)
+                        except ValueError:
+                            pass
+                    elif tag_lower == 'saleenddate':
+                        current_product['sale_end_date'] = text
+                    elif tag_lower == 'pricegroup':
+                        current_product['price_group'] = text
+                    elif tag_lower == 'youth':
+                        current_product['youth'] = text.upper() == 'TRUE'
+                    elif tag_lower == 'discountcode':
+                        current_product['discount_code'] = text
+            
+            # Don't forget the last product
+            if current_product and current_product.get('product_id'):
+                products.append(current_product)
+            
+            logger.info(f"BulkData returned {len(products)} products")
+            return {'success': True, 'products': products, 'count': len(products)}
+            
+        except (ConnectionError, ValueError) as e:
+            return {'success': False, 'error': str(e)}
+        except Exception as e:
+            logger.error(f"getBulkData error: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def download_image(self, image_url: str, save_path: str = None) -> dict:
+        """
+        Download an image from a URL and optionally save it locally.
+        This is used for BulkData images which can be downloaded (not hotlink-blocked).
+        
+        Args:
+            image_url: The URL of the image to download
+            save_path: Optional local path to save the image
+            
+        Returns:
+            dict with 'success', 'image_data' (base64), and optionally 'saved_path'
+        """
+        import base64
+        import os
+        
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'image/*,*/*;q=0.8',
+            }
+            
+            response = requests.get(image_url, headers=headers, timeout=30)
+            
+            if response.status_code != 200:
+                return {'success': False, 'error': f'HTTP {response.status_code}'}
+            
+            content_type = response.headers.get('content-type', '').lower()
+            
+            # Verify it's an image
+            is_image = 'image' in content_type
+            if not is_image and response.content:
+                magic = response.content[:8]
+                is_image = (magic.startswith(b'\xff\xd8\xff') or  # JPEG
+                           magic.startswith(b'\x89PNG') or        # PNG
+                           magic.startswith(b'GIF8') or           # GIF
+                           magic.startswith(b'RIFF'))             # WebP
+            
+            if not is_image:
+                return {'success': False, 'error': 'Response is not an image'}
+            
+            image_base64 = base64.b64encode(response.content).decode('utf-8')
+            result = {'success': True, 'image_data': image_base64, 'size': len(response.content)}
+            
+            # Save to file if path provided
+            if save_path:
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                with open(save_path, 'wb') as f:
+                    f.write(response.content)
+                result['saved_path'] = save_path
+                logger.info(f"Saved image to {save_path}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error downloading image {image_url}: {e}")
             return {'success': False, 'error': str(e)}
