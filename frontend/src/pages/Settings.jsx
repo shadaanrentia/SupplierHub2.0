@@ -19,6 +19,7 @@ export default function Settings() {
   const [odooForm, setOdooForm] = useState({ odoo_url: "", odoo_db: "", odoo_username: "", odoo_api_key: "" });
   const [syncForm, setSyncForm] = useState({ sync_products_interval_hours: 24, sync_inventory_interval_minutes: 30, sync_pricing_interval_hours: 12, auto_sync_enabled: false });
   const [warehouseForm, setWarehouseForm] = useState({ preferred_warehouse: "" });
+  const [pricingForm, setPricingForm] = useState({ markup_percentage: 40, default_warehouse: "Main Warehouse" });
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -43,6 +44,10 @@ export default function Settings() {
       });
       setWarehouseForm({
         preferred_warehouse: res.data.preferred_warehouse || "",
+      });
+      setPricingForm({
+        markup_percentage: res.data.markup_percentage || 40,
+        default_warehouse: res.data.default_warehouse || "Main Warehouse",
       });
     } catch (e) {
       console.error(e);
@@ -87,6 +92,18 @@ export default function Settings() {
     try {
       await axios.put(`${API}/settings`, warehouseForm);
       toast.success("Warehouse preference saved");
+    } catch (e) {
+      toast.error("Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const savePricing = async () => {
+    setSaving(true);
+    try {
+      await axios.put(`${API}/settings`, pricingForm);
+      toast.success("Pricing settings saved");
     } catch (e) {
       toast.error("Failed to save");
     } finally {
@@ -282,6 +299,56 @@ export default function Settings() {
           {warehouseForm.preferred_warehouse && (
             <p className="text-xs text-emerald-400">Currently showing inventory for: {warehouseForm.preferred_warehouse}</p>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Pricing & Markup Settings */}
+      <Card className="bg-zinc-900/50 border-zinc-800 rounded-sm">
+        <CardHeader className="p-4 border-b border-zinc-800/50">
+          <CardTitle className="font-heading text-sm font-bold uppercase text-zinc-400 tracking-wider flex items-center gap-2">
+            <SettingsIcon className="w-4 h-4" />
+            Pricing Configuration
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-4 space-y-4">
+          <p className="text-sm text-zinc-400">Configure markup percentage for calculating sale prices from supplier cost prices.</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs text-zinc-500 mb-1 block">Markup Percentage (%)</label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min="0"
+                  max="500"
+                  value={pricingForm.markup_percentage}
+                  onChange={(e) => setPricingForm({ ...pricingForm, markup_percentage: parseFloat(e.target.value) || 0 })}
+                  className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-sm w-32"
+                  data-testid="markup-percentage-input"
+                />
+                <span className="text-zinc-400">%</span>
+              </div>
+              <p className="text-xs text-zinc-600 mt-1">Sale Price = Cost + (Cost × Markup%)</p>
+            </div>
+            <div>
+              <label className="text-xs text-zinc-500 mb-1 block">Default Odoo Warehouse</label>
+              <Input
+                type="text"
+                value={pricingForm.default_warehouse}
+                onChange={(e) => setPricingForm({ ...pricingForm, default_warehouse: e.target.value })}
+                className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-sm"
+                placeholder="Main Warehouse"
+                data-testid="default-warehouse-input"
+              />
+            </div>
+          </div>
+          <div className="flex items-center justify-between pt-2 border-t border-zinc-800/50">
+            <div className="text-sm text-zinc-500">
+              Example: Cost $10.00 + {pricingForm.markup_percentage}% = <span className="text-green-400 font-bold">${(10 + (10 * pricingForm.markup_percentage / 100)).toFixed(0)}.00</span> sale price
+            </div>
+            <Button onClick={savePricing} disabled={saving} className="bg-blue-600 hover:bg-blue-500 text-white rounded-none" data-testid="save-pricing-btn">
+              <Save className="w-4 h-4 mr-2" />Save Pricing Settings
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>
