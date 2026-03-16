@@ -125,3 +125,68 @@ class OdooService:
         except Exception as e:
             logger.error(f"Odoo push error: {e}")
             return {'success': False, 'error': str(e)}
+
+    def get_ecommerce_categories(self) -> dict:
+        """Fetch all e-commerce product categories from Odoo."""
+        if self.mock_mode:
+            return {
+                'success': False,
+                'error': 'Odoo not configured',
+                'categories': []
+            }
+        
+        try:
+            if not self.uid:
+                conn = self.test_connection()
+                if not conn.get('connected'):
+                    return {'success': False, 'error': 'Cannot connect to Odoo', 'categories': []}
+            
+            models = xmlrpc.client.ServerProxy(f'{self.url}/xmlrpc/2/object')
+            
+            # Fetch public categories (e-commerce categories)
+            # Try 'product.public.category' first (Odoo e-commerce module)
+            try:
+                categories = models.execute_kw(
+                    self.db_name, self.uid, self.api_key,
+                    'product.public.category', 'search_read',
+                    [[]],
+                    {'fields': ['id', 'name', 'parent_id', 'sequence']}
+                )
+                logger.info(f"Fetched {len(categories)} e-commerce categories from Odoo")
+            except xmlrpc.client.Fault as e:
+                # Fallback to product.category if e-commerce module not installed
+                logger.warning(f"product.public.category not found, trying product.category: {e.faultString}")
+                categories = models.execute_kw(
+                    self.db_name, self.uid, self.api_key,
+                    'product.category', 'search_read',
+                    [[]],
+                    {'fields': ['id', 'name', 'parent_id']}
+                )
+                logger.info(f"Fetched {len(categories)} product categories from Odoo")
+            
+            # Process categories to extract parent names
+            cat_dict = {c['id']: c for c in categories}
+            result = []
+            for cat in categories:
+                parent_name = None
+                parent_id = None
+                if cat.get('parent_id'):
+                    parent_id = cat['parent_id'][0] if isinstance(cat['parent_id'], (list, tuple)) else cat['parent_id']
+                    parent_name = cat['parent_id'][1] if isinstance(cat['parent_id'], (list, tuple)) else cat_dict.get(parent_id, {}).get('name')
+                
+                result.append({
+                    'odoo_category_id': cat['id'],
+                    'category_name': cat['name'],
+                    'parent_id': parent_id,
+                    'parent_category': parent_name
+                })
+            
+            return {'success': True, 'categories': result}
+            
+        except xmlrpc.client.Fault as e:
+            logger.error(f"Odoo API error fetching categories: {e.faultString}")
+            return {'success': False, 'error': f'Odoo API error: {e.faultString}', 'categories': []}
+        except Exception as e:
+            logger.error(f"Error fetching Odoo categories: {e}")
+            return {'success': False, 'error': str(e), 'categories': []}
+

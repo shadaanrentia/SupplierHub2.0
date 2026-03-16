@@ -305,6 +305,33 @@ async def startup():
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_variants_product ON product_variants(product_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_media_product ON product_media(product_id)')
         
+        # Create odoo_categories table
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS odoo_categories (
+                id VARCHAR(64) PRIMARY KEY,
+                odoo_category_id INTEGER NOT NULL UNIQUE,
+                category_name VARCHAR(300) NOT NULL,
+                parent_category VARCHAR(300),
+                parent_id INTEGER,
+                is_selected BOOLEAN DEFAULT FALSE,
+                last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Create category_mapping table
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS category_mapping (
+                id VARCHAR(64) PRIMARY KEY,
+                supplier_category_name VARCHAR(300) NOT NULL UNIQUE,
+                supplier_category_id VARCHAR(100),
+                odoo_category_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         # Create default admin user
         admin = await conn.fetchrow("SELECT id FROM users WHERE username = 'admin'")
         if not admin:
@@ -1668,6 +1695,136 @@ async def sync_to_odoo(background_tasks: BackgroundTasks, user: dict = Depends(g
             synced += 1
     
     return {"synced": synced, "total": len(products)}
+
+
+# ==================== ODOO CATEGORY SYNC & MAPPING ====================
+
+@api_router.post("/odoo/sync-categories")
+async def sync_odoo_categories(user: dict = Depends(get_current_user)):
+    """Fetch and sync e-commerce categories from Odoo."""
+    from odoo_service import OdooService
+    async with pool.acquire() as conn:
+        settings_row = await conn.fetchrow("SELECT * FROM settings WHERE id = 'system_settings'")
+        if not settings_row:
+            raise HTTPException(400, "Settings not configured")
+        settings = row_to_dict(settings_row)
+    
+    odoo = OdooService(settings.get('odoo_url'), settings.get('odoo_db'), settings.get('odoo_username'), settings.get('odoo_api_key'))
+    
+    result = odoo.get_ecommerce_categories()
+    if not result.get('success'):
+        raise HTTPException(400, result.get('error', 'Failed to fetch categories'))
+    
+    categories = result.get('categories', [])
+    
+    # Store categories in database
+    async with pool.acquire() as conn:
+        synced = 0
+        for cat in categories:
+            await conn.execute('''
+                INSERT INTO odoo_categories (id, odoo_category_id, category_name, parent_category, parent_id, last_synced, updated_at)
+                VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+                ON CONFLICT (odoo_category_id) DO UPDATE SET
+                    category_name = EXCLUDED.category_name,
+                    parent_category = EXCLUDED.parent_category,
+                    parent_id = EXCLUDED.parent_id,
+                    last_synced = NOW(),
+                    updated_at = NOW()
+            ''', new_id(), cat['odoo_category_id'], cat['category_name'], 
+                cat.get('parent_category'), cat.get('parent_id'))
+            synced += 1
+    
+    return {"success": True, "synced": synced, "total": len(categories)}
+
+
+@api_router.get("/odoo/categories")
+async def get_odoo_categories(user: dict = Depends(get_current_user)):
+    """Get stored Odoo categories."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT * FROM odoo_categories ORDER BY parent_category NULLS FIRST, category_name
+        ''')
+        categories = [row_to_dict(r) for r in rows]
+    return {"categories": categories}
+
+
+@api_router.put("/odoo/categories/{category_id}/select")
+async def toggle_odoo_category_selection(category_id: str, data: dict, user: dict = Depends(get_current_user)):
+    """Toggle category selection for product sync."""
+    is_selected = data.get('is_selected', False)
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            UPDATE odoo_categories SET is_selected = $1, updated_at = NOW() WHERE id = $2
+        ''', is_selected, category_id)
+    return {"success": True}
+
+
+@api_router.put("/odoo/categories/bulk-select")
+async def bulk_select_odoo_categories(data: dict, user: dict = Depends(get_current_user)):
+    """Bulk update category selections."""
+    category_ids = data.get('category_ids', [])
+    is_selected = data.get('is_selected', False)
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            UPDATE odoo_categories SET is_selected = $1, updated_at = NOW() WHERE id = ANY($2)
+        ''', is_selected, category_ids)
+    return {"success": True, "updated": len(category_ids)}
+
+
+@api_router.get("/supplier-categories")
+async def get_supplier_categories(user: dict = Depends(get_current_user)):
+    """Get unique supplier categories from synced products."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT DISTINCT category FROM products 
+            WHERE category IS NOT NULL AND category != ''
+            ORDER BY category
+        ''')
+        categories = [r['category'] for r in rows]
+    return {"categories": categories}
+
+
+@api_router.get("/category-mappings")
+async def get_category_mappings(user: dict = Depends(get_current_user)):
+    """Get all category mappings."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT cm.*, oc.category_name as odoo_category_name
+            FROM category_mapping cm
+            LEFT JOIN odoo_categories oc ON cm.odoo_category_id = oc.odoo_category_id
+            ORDER BY cm.supplier_category_name
+        ''')
+        mappings = [row_to_dict(r) for r in rows]
+    return {"mappings": mappings}
+
+
+@api_router.post("/category-mappings")
+async def create_or_update_mapping(data: dict, user: dict = Depends(get_current_user)):
+    """Create or update a category mapping."""
+    supplier_category = data.get('supplier_category_name')
+    odoo_category_id = data.get('odoo_category_id')
+    
+    if not supplier_category:
+        raise HTTPException(400, "Supplier category name is required")
+    
+    async with pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO category_mapping (id, supplier_category_name, odoo_category_id, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (supplier_category_name) DO UPDATE SET
+                odoo_category_id = EXCLUDED.odoo_category_id,
+                updated_at = NOW()
+        ''', new_id(), supplier_category, odoo_category_id)
+    
+    return {"success": True}
+
+
+@api_router.delete("/category-mappings/{mapping_id}")
+async def delete_mapping(mapping_id: str, user: dict = Depends(get_current_user)):
+    """Delete a category mapping."""
+    async with pool.acquire() as conn:
+        await conn.execute('DELETE FROM category_mapping WHERE id = $1', mapping_id)
+    return {"success": True}
 
 
 # ==================== MEDIA PROXY ====================

@@ -10,6 +10,7 @@ import ProductDetail from "@/pages/ProductDetail";
 import ProductSearch from "@/pages/ProductSearch";
 import Suppliers from "@/pages/Suppliers";
 import SyncManagement from "@/pages/SyncManagement";
+import CategoryMapping from "@/pages/CategoryMapping";
 import Settings from "@/pages/Settings";
 import Login from "@/pages/Login";
 import Register from "@/pages/Register";
@@ -65,6 +66,7 @@ function App() {
               <Route path="/product-search" element={<ProductSearch />} />
               <Route path="/suppliers" element={<Suppliers />} />
               <Route path="/sync" element={<SyncManagement />} />
+              <Route path="/category-mapping" element={<CategoryMapping />} />
               <Route path="/settings" element={<Settings />} />
               {user.role === "admin" && <Route path="/users" element={<Users />} />}
             </Route>
