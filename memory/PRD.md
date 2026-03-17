@@ -240,8 +240,14 @@ Build a middleware application that integrates supplier product data using Promo
 - `POST /api/odoo/test-connection` - Test Odoo connection
 
 ## Credentials
-- **ATC/SanMar**: Account 37887 (API endpoint CAPTCHA protected)
-- **S&S Activewear**: Account 435145 (API endpoint CAPTCHA protected)
+- **ATC/SanMar Production**: 
+  - Account: `37887`
+  - Password: `edi@redleafssports.ca`
+  - Media Password: `dE3@tg37`
+  - Base URL: `https://edi.atc-apparel.com`
+- **ATC Sandbox (Testing)**:
+  - Account: `sandbox`
+  - Password: `sandbox123`
 - **Odoo**: 
   - URL: `https://odoo.redleafssports.ca`
   - Database: `RedLeafsPOC27012026`
