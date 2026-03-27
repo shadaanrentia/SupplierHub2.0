@@ -113,23 +113,6 @@ export default function SyncManagement() {
     }
   };
 
-  const pushToOdoo = async () => {
-    setSyncing((prev) => ({ ...prev, odoo: true }));
-    try {
-      const res = await axios.post(`${API}/odoo/push-products`);
-      if (res.data.status === "no_products") {
-        toast.info("No products pending sync to Odoo");
-      } else {
-        toast.success(`Pushing ${res.data.products_to_push} products to Odoo`);
-      }
-      setTimeout(fetchData, 2000);
-    } catch (e) {
-      toast.error("Failed to push to Odoo");
-    } finally {
-      setSyncing((prev) => ({ ...prev, odoo: false }));
-    }
-  };
-
   return (
     <div className="p-6 space-y-6" data-testid="sync-page">
       <div className="flex items-center justify-between">
@@ -209,22 +192,6 @@ export default function SyncManagement() {
                   </div>
                 </div>
               ))}
-
-              <div className="flex items-center justify-between p-3 border border-blue-800/50 bg-blue-950/20">
-                <div>
-                  <p className="text-sm font-medium text-blue-300">Push to Odoo</p>
-                  <p className="text-xs text-blue-400/60">Push all selected products to Odoo ERP</p>
-                </div>
-                <Button
-                  onClick={pushToOdoo}
-                  disabled={syncing.odoo}
-                  className="bg-blue-600 hover:bg-blue-500 text-white rounded-none"
-                  data-testid="push-to-odoo-btn"
-                >
-                  {syncing.odoo ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : <ArrowUpRight className="w-4 h-4 mr-2" />}
-                  Push to Odoo
-                </Button>
-              </div>
             </div>
           ) : (
             <p className="text-zinc-500 text-sm font-mono">No suppliers configured</p>

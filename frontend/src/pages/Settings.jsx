@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Settings as SettingsIcon, Save, Plug, RefreshCw, Warehouse } from "lucide-react";
+import { Settings as SettingsIcon, Save, Plug, RefreshCw, Warehouse, Clock, Timer } from "lucide-react";
 import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -16,20 +16,23 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [warehouses, setWarehouses] = useState([]);
+  const [schedulerStatus, setSchedulerStatus] = useState(null);
   const [odooForm, setOdooForm] = useState({ odoo_url: "", odoo_db: "", odoo_username: "", odoo_api_key: "" });
-  const [syncForm, setSyncForm] = useState({ sync_products_interval_hours: 24, sync_inventory_interval_minutes: 30, sync_pricing_interval_hours: 12, auto_sync_enabled: false });
+  const [syncForm, setSyncForm] = useState({ sync_products_interval_hours: 24, sync_inventory_interval_minutes: 30, sync_pricing_interval_hours: 12, auto_sync_enabled: false, auto_push_to_odoo: false });
   const [warehouseForm, setWarehouseForm] = useState({ preferred_warehouse: "" });
   const [pricingForm, setPricingForm] = useState({ markup_percentage: 40, default_warehouse: "Main Warehouse" });
 
   const fetchSettings = useCallback(async () => {
     try {
-      const [settingsRes, warehousesRes] = await Promise.all([
+      const [settingsRes, warehousesRes, schedulerRes] = await Promise.all([
         axios.get(`${API}/settings`),
-        axios.get(`${API}/settings/warehouses`)
+        axios.get(`${API}/settings/warehouses`),
+        axios.get(`${API}/scheduler/status`).catch(() => ({ data: null })),
       ]);
       const res = settingsRes;
       setSettings(res.data);
       setWarehouses(warehousesRes.data.warehouses || []);
+      setSchedulerStatus(schedulerRes.data);
       setOdooForm({
         odoo_url: res.data.odoo_url || "",
         odoo_db: res.data.odoo_db || "",
@@ -41,6 +44,7 @@ export default function Settings() {
         sync_inventory_interval_minutes: res.data.sync_inventory_interval_minutes || 30,
         sync_pricing_interval_hours: res.data.sync_pricing_interval_hours || 12,
         auto_sync_enabled: res.data.auto_sync_enabled || false,
+        auto_push_to_odoo: res.data.auto_push_to_odoo || false,
       });
       setWarehouseForm({
         preferred_warehouse: res.data.preferred_warehouse || "",
@@ -251,19 +255,59 @@ export default function Settings() {
               />
             </div>
           </div>
-          <div className="flex items-center justify-between pt-2">
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={syncForm.auto_sync_enabled}
-                onCheckedChange={(v) => setSyncForm({ ...syncForm, auto_sync_enabled: v })}
-                data-testid="auto-sync-switch"
-              />
-              <label className="text-sm text-zinc-400">Enable Automatic Sync</label>
+          <div className="flex flex-col gap-3 pt-2 border-t border-zinc-800/50">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={syncForm.auto_sync_enabled}
+                  onCheckedChange={(v) => setSyncForm({ ...syncForm, auto_sync_enabled: v })}
+                  data-testid="auto-sync-switch"
+                />
+                <label className="text-sm text-zinc-400">Enable Automatic Sync</label>
+              </div>
             </div>
-            <Button onClick={saveSync} disabled={saving} className="bg-blue-600 hover:bg-blue-500 text-white rounded-none" data-testid="save-sync-btn">
-              <Save className="w-4 h-4 mr-2" />Save Sync Settings
-            </Button>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={syncForm.auto_push_to_odoo}
+                  onCheckedChange={(v) => setSyncForm({ ...syncForm, auto_push_to_odoo: v })}
+                  data-testid="auto-push-odoo-switch"
+                />
+                <label className="text-sm text-zinc-400">Auto-push to Odoo after BulkData sync</label>
+              </div>
+              <Button onClick={saveSync} disabled={saving} className="bg-blue-600 hover:bg-blue-500 text-white rounded-none" data-testid="save-sync-btn">
+                <Save className="w-4 h-4 mr-2" />Save Sync Settings
+              </Button>
+            </div>
           </div>
+
+          {/* Scheduler Status */}
+          {schedulerStatus && (
+            <div className="mt-3 p-3 border border-zinc-800 bg-zinc-950/50">
+              <div className="flex items-center gap-2 mb-2">
+                <Timer className="w-4 h-4 text-zinc-400" />
+                <span className="text-xs font-mono text-zinc-400 uppercase tracking-wider">Scheduler Status</span>
+                <span className={`ml-2 inline-flex px-2 py-0.5 text-xs font-mono border rounded-none ${schedulerStatus.running ? 'bg-emerald-950/50 text-emerald-400 border-emerald-800' : 'bg-zinc-800 text-zinc-500 border-zinc-700'}`}>
+                  {schedulerStatus.running ? 'RUNNING' : 'STOPPED'}
+                </span>
+              </div>
+              {schedulerStatus.jobs && schedulerStatus.jobs.length > 0 ? (
+                <div className="space-y-1">
+                  {schedulerStatus.jobs.map((job) => (
+                    <div key={job.id} className="flex items-center justify-between text-xs">
+                      <span className="font-mono text-zinc-400">{job.id}</span>
+                      <span className="font-mono text-zinc-500">{job.trigger}</span>
+                      <span className="font-mono text-emerald-400">
+                        {job.next_run ? `Next: ${new Date(job.next_run).toLocaleString()}` : 'Not scheduled'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-zinc-600 font-mono">No scheduled jobs (enable auto-sync to activate)</p>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 

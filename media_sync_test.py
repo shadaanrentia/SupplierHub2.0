@@ -3,7 +3,7 @@ import requests
 import json
 import sys
 
-API_BASE = "https://supplier-odoo-bridge.preview.emergentagent.com/api"
+API_BASE = "https://supplier-sync-18.preview.emergentagent.com/api"
 
 def test_media_sync_functionality():
     """Test specific media sync features for iteration 2"""

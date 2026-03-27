@@ -137,6 +137,7 @@ class SupplierCreate(BaseModel):
     use_uat: bool = False
     services: Dict[str, str] = {}
     endpoint_style: str = ""
+    bulk_data_url: str = ""
 
 class SupplierUpdate(BaseModel):
     supplier_name: Optional[str] = None
@@ -148,6 +149,7 @@ class SupplierUpdate(BaseModel):
     services: Optional[Dict[str, str]] = None
     endpoint_style: Optional[str] = None
     status: Optional[str] = None
+    bulk_data_url: Optional[str] = None
 
 class ProductSelectRequest(BaseModel):
     product_id: str
@@ -168,6 +170,7 @@ class SettingsUpdate(BaseModel):
     odoo_api_key: Optional[str] = None
     preferred_warehouse: Optional[str] = None
     markup_percentage: Optional[float] = None
+    auto_push_to_odoo: Optional[bool] = None
 
 
 # ==================== STARTUP & SHUTDOWN ====================
@@ -204,6 +207,7 @@ async def startup():
                 use_uat BOOLEAN DEFAULT FALSE,
                 endpoint_style VARCHAR(50),
                 services JSONB DEFAULT '{}',
+                bulk_data_url TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
                 status VARCHAR(50) DEFAULT 'active',
                 last_sync TIMESTAMP,
@@ -373,6 +377,9 @@ async def startup():
         await conn.execute('''
             ALTER TABLE settings ADD COLUMN IF NOT EXISTS default_warehouse VARCHAR(200) DEFAULT 'Main Warehouse'
         ''')
+        await conn.execute('''
+            ALTER TABLE settings ADD COLUMN IF NOT EXISTS auto_push_to_odoo BOOLEAN DEFAULT FALSE
+        ''')
         
         # Create default admin user
         admin = await conn.fetchrow("SELECT id FROM users WHERE username = 'admin'")
@@ -393,9 +400,16 @@ async def startup():
     
     logger.info("PostgreSQL database initialized")
 
+    # Initialize and apply scheduler
+    from scheduler import init_scheduler, apply_schedule_from_settings
+    init_scheduler(pool)
+    await apply_schedule_from_settings()
+
 @app.on_event("shutdown")
 async def shutdown():
     global pool
+    from scheduler import shutdown_scheduler
+    shutdown_scheduler()
     if pool:
         await pool.close()
 
@@ -445,6 +459,99 @@ async def get_users(user: dict = Depends(get_admin_user)):
         rows = await conn.fetch("SELECT id, username, full_name, email, role, approved, created_at FROM users ORDER BY created_at DESC")
         return {"users": [row_to_dict(r) for r in rows]}
 
+class UserCreate(BaseModel):
+    username: str
+    email: Optional[str] = None
+    password: str
+    role: str = "user"
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = None
+
+class PasswordReset(BaseModel):
+    new_password: str
+
+@api_router.post("/users")
+async def create_user(data: UserCreate, admin: dict = Depends(get_admin_user)):
+    """Create a new user (admin only)."""
+    if not data.username or not data.password:
+        raise HTTPException(400, "Username and password are required")
+    if len(data.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    
+    async with pool.acquire() as conn:
+        existing = await conn.fetchval("SELECT id FROM users WHERE username = $1", data.username)
+        if existing:
+            raise HTTPException(400, "Username already exists")
+        
+        user_id = new_id()
+        await conn.execute("""
+            INSERT INTO users (id, username, email, hashed_password, role, approved, created_at)
+            VALUES ($1, $2, $3, $4, $5, TRUE, $6)
+        """, user_id, data.username, data.email, hash_password(data.password), data.role, utc_now())
+        
+        return {"status": "created", "id": user_id}
+
+@api_router.put("/users/{user_id}")
+async def update_user(user_id: str, data: UserUpdate, admin: dict = Depends(get_admin_user)):
+    """Update user details (admin only)."""
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
+        if not existing:
+            raise HTTPException(404, "User not found")
+        
+        update_fields = []
+        values = []
+        param_idx = 1
+        
+        if data.username:
+            update_fields.append(f"username = ${param_idx}")
+            values.append(data.username)
+            param_idx += 1
+        if data.email is not None:
+            update_fields.append(f"email = ${param_idx}")
+            values.append(data.email)
+            param_idx += 1
+        if data.role:
+            update_fields.append(f"role = ${param_idx}")
+            values.append(data.role)
+            param_idx += 1
+        if data.password:
+            if len(data.password) < 6:
+                raise HTTPException(400, "Password must be at least 6 characters")
+            update_fields.append(f"hashed_password = ${param_idx}")
+            values.append(hash_password(data.password))
+            param_idx += 1
+        
+        if update_fields:
+            update_fields.append(f"updated_at = ${param_idx}")
+            values.append(utc_now())
+            param_idx += 1
+            values.append(user_id)
+            
+            query = f"UPDATE users SET {', '.join(update_fields)} WHERE id = ${param_idx}"
+            await conn.execute(query, *values)
+        
+        return {"status": "updated"}
+
+@api_router.post("/users/{user_id}/reset-password")
+async def reset_user_password(user_id: str, data: PasswordReset, admin: dict = Depends(get_admin_user)):
+    """Reset a user's password (admin only)."""
+    if len(data.new_password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE users SET hashed_password = $1, updated_at = $2 WHERE id = $3",
+            hash_password(data.new_password), utc_now(), user_id
+        )
+        if result == "UPDATE 0":
+            raise HTTPException(404, "User not found")
+        return {"status": "password_reset"}
+
 @api_router.put("/users/{user_id}/approve")
 async def approve_user(user_id: str, data: UserApproval, admin: dict = Depends(get_admin_user)):
     async with pool.acquire() as conn:
@@ -486,9 +593,9 @@ async def create_supplier(data: SupplierCreate, user: dict = Depends(get_admin_u
     supplier_id = new_id()
     async with pool.acquire() as conn:
         await conn.execute('''
-            INSERT INTO suppliers (id, supplier_name, api_base_url, account_number, password, media_password, use_uat, endpoint_style, services, status, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10, $10)
-        ''', supplier_id, data.supplier_name, data.api_base_url, data.account_number, data.password, data.media_password, data.use_uat, data.endpoint_style, json.dumps(data.services), utc_now())
+            INSERT INTO suppliers (id, supplier_name, api_base_url, account_number, password, media_password, use_uat, endpoint_style, services, bulk_data_url, status, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11, $11)
+        ''', supplier_id, data.supplier_name, data.api_base_url, data.account_number, data.password, data.media_password, data.use_uat, data.endpoint_style, json.dumps(data.services), data.bulk_data_url, utc_now())
         return {"id": supplier_id, "message": "Supplier created"}
 
 @api_router.get("/suppliers/{supplier_id}")
@@ -550,6 +657,10 @@ async def update_supplier(supplier_id: str, data: SupplierUpdate, user: dict = D
         if data.status is not None:
             update_fields.append(f"status = ${param_idx}")
             values.append(data.status)
+            param_idx += 1
+        if data.bulk_data_url is not None:
+            update_fields.append(f"bulk_data_url = ${param_idx}")
+            values.append(data.bulk_data_url)
             param_idx += 1
         
         update_fields.append(f"updated_at = ${param_idx}")
@@ -876,6 +987,32 @@ async def bulk_select(data: BulkSelectRequest, user: dict = Depends(get_current_
         """, data.selected, status, utc_now(), data.product_ids)
         return {"status": "updated"}
 
+class BulkDeleteRequest(BaseModel):
+    product_ids: list
+
+@api_router.post("/products/bulk-delete")
+async def bulk_delete_products(data: BulkDeleteRequest, user: dict = Depends(get_admin_user)):
+    """Delete multiple products by ID."""
+    async with pool.acquire() as conn:
+        # Delete related records first (cascade should handle this but being explicit)
+        await conn.execute("DELETE FROM product_variants WHERE product_id = ANY($1)", data.product_ids)
+        await conn.execute("DELETE FROM product_media WHERE product_id = ANY($1)", data.product_ids)
+        result = await conn.execute("DELETE FROM products WHERE id = ANY($1)", data.product_ids)
+        deleted = int(result.split()[-1]) if result else 0
+        return {"status": "deleted", "count": deleted}
+
+@api_router.delete("/products/delete-all")
+async def delete_all_products(user: dict = Depends(get_admin_user)):
+    """Delete all products. Use with caution!"""
+    async with pool.acquire() as conn:
+        # Get count before deleting
+        count = await conn.fetchval("SELECT COUNT(*) FROM products")
+        # Delete all (cascade will handle variants and media)
+        await conn.execute("DELETE FROM product_variants")
+        await conn.execute("DELETE FROM product_media")
+        await conn.execute("DELETE FROM products")
+        return {"status": "deleted", "count": count}
+
 
 # ==================== DASHBOARD ====================
 @api_router.get("/dashboard/stats")
@@ -890,15 +1027,48 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
         total_variants = await conn.fetchval("SELECT COUNT(*) FROM product_variants")
         active_products = await conn.fetchval("SELECT COUNT(*) FROM products WHERE is_active = TRUE")
         
+        # Category distribution
+        category_rows = await conn.fetch("""
+            SELECT COALESCE(category, 'Uncategorized') as category, COUNT(*) as count 
+            FROM products 
+            GROUP BY category 
+            ORDER BY count DESC 
+            LIMIT 10
+        """)
+        category_distribution = [{"category": r['category'][:20], "count": r['count']} for r in category_rows]
+        
+        # Brand distribution
+        brand_rows = await conn.fetch("""
+            SELECT COALESCE(brand, 'Unknown') as brand, COUNT(*) as count 
+            FROM products 
+            GROUP BY brand 
+            ORDER BY count DESC 
+            LIMIT 10
+        """)
+        brand_distribution = [{"brand": r['brand'][:15], "count": r['count']} for r in brand_rows]
+        
+        # Supplier distribution
+        supplier_rows = await conn.fetch("""
+            SELECT s.supplier_name as supplier, COUNT(p.id) as count 
+            FROM suppliers s
+            LEFT JOIN products p ON p.supplier_id = s.id
+            GROUP BY s.id, s.supplier_name
+            ORDER BY count DESC
+        """)
+        supplier_distribution = [{"supplier": r['supplier'][:15], "count": r['count']} for r in supplier_rows]
+        
         return {
             "total_products": total_products,
-            "selected_products": selected_products,
+            "selected_for_odoo": selected_products,
+            "synced_to_odoo": synced_products,
             "total_suppliers": total_suppliers,
             "active_suppliers": active_suppliers,
-            "synced_products": synced_products,
             "pending_products": pending_products,
             "total_variants": total_variants,
-            "active_products": active_products
+            "active_products": active_products,
+            "category_distribution": category_distribution,
+            "brand_distribution": brand_distribution,
+            "supplier_distribution": supplier_distribution
         }
 
 
@@ -960,7 +1130,8 @@ async def update_settings(data: SettingsUpdate, user: dict = Depends(get_admin_u
         param_idx = 1
         
         for field in ['sync_products_interval_hours', 'sync_inventory_interval_minutes', 'sync_pricing_interval_hours',
-                      'auto_sync_enabled', 'odoo_url', 'odoo_db', 'odoo_username', 'preferred_warehouse', 'markup_percentage']:
+                      'auto_sync_enabled', 'odoo_url', 'odoo_db', 'odoo_username', 'preferred_warehouse', 'markup_percentage',
+                      'auto_push_to_odoo']:
             val = getattr(data, field, None)
             if val is not None:
                 update_fields.append(f"{field} = ${param_idx}")
@@ -980,6 +1151,10 @@ async def update_settings(data: SettingsUpdate, user: dict = Depends(get_admin_u
             query = f"UPDATE settings SET {', '.join(update_fields)} WHERE id = 'system_settings'"
             await conn.execute(query, *values)
         
+        # Reschedule background jobs if sync-related settings changed
+        from scheduler import apply_schedule_from_settings
+        await apply_schedule_from_settings()
+        
         return {"status": "updated", "success": True}
 
 @api_router.get("/settings/warehouses")
@@ -994,9 +1169,123 @@ async def get_available_warehouses(user: dict = Depends(get_current_user)):
         return {"warehouses": warehouses}
 
 
+# ==================== SCHEDULER ROUTES ====================
+@api_router.get("/scheduler/status")
+async def scheduler_status(user: dict = Depends(get_current_user)):
+    from scheduler import get_scheduler_status
+    return get_scheduler_status()
+
+@api_router.post("/scheduler/reschedule")
+async def reschedule_jobs(user: dict = Depends(get_admin_user)):
+    from scheduler import apply_schedule_from_settings
+    await apply_schedule_from_settings()
+    from scheduler import get_scheduler_status
+    return {"status": "rescheduled", **get_scheduler_status()}
+
+
 # ==================== SYNC ROUTES ====================
 # Global dict to track running sync tasks
 running_syncs = {}
+
+async def _auto_push_to_odoo_if_enabled(supplier_id: str):
+    """Check settings and auto-push pending products to Odoo if enabled."""
+    try:
+        async with pool.acquire() as conn:
+            settings_row = await conn.fetchrow("SELECT auto_push_to_odoo, odoo_url, odoo_db, odoo_username, odoo_api_key, markup_percentage FROM settings WHERE id = 'system_settings'")
+            if not settings_row or not settings_row.get('auto_push_to_odoo'):
+                return
+            if not settings_row.get('odoo_url'):
+                logger.info("Auto-push: Odoo not configured, skipping")
+                return
+
+            pending_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM products WHERE selected_for_odoo = TRUE AND odoo_sync_status = 'pending' AND supplier_id = $1",
+                supplier_id
+            )
+            if pending_count == 0:
+                logger.info("Auto-push: No pending products for supplier %s", supplier_id)
+                return
+
+        logger.info("Auto-push: %d products pending for Odoo, starting push...", pending_count)
+        push_log_id = await _create_sync_log(supplier_id, "Auto", "odoo_push", f"Auto-pushing {pending_count} products to Odoo...")
+        await _odoo_push_task(supplier_id, push_log_id)
+
+    except Exception as e:
+        logger.error("Auto-push to Odoo error: %s", e)
+
+
+async def _odoo_push_task(supplier_id: str, log_id: str):
+    """Push pending products for a specific supplier to Odoo."""
+    from odoo_service import OdooService
+    try:
+        async with pool.acquire() as conn:
+            settings_row = await conn.fetchrow("SELECT * FROM settings WHERE id = 'system_settings'")
+            settings = row_to_dict(settings_row)
+            markup = float(settings.get('markup_percentage') or 40)
+
+            products = await conn.fetch('''
+                SELECT p.*, cm.odoo_category_id
+                FROM products p
+                LEFT JOIN category_mapping cm ON p.category = cm.supplier_category_name
+                WHERE p.selected_for_odoo = TRUE AND p.odoo_sync_status = 'pending' AND p.supplier_id = $1
+            ''', supplier_id)
+
+        if not products:
+            await _update_sync_log(log_id, 'completed', 'No pending products', progress=100)
+            return
+
+        odoo = OdooService(settings.get('odoo_url'), settings.get('odoo_db'), settings.get('odoo_username'), settings.get('odoo_api_key'))
+        conn_test = odoo.test_connection()
+        if not conn_test.get('connected'):
+            await _update_sync_log(log_id, 'failed', f"Odoo connection failed: {conn_test.get('message')}")
+            return
+
+        synced = 0
+        failed = 0
+        for p in products:
+            product = row_to_dict(p)
+            async with pool.acquire() as conn:
+                variants = await conn.fetch("SELECT * FROM product_variants WHERE product_id = $1", product['id'])
+                images = await conn.fetch("SELECT * FROM product_media WHERE product_id = $1", product['id'])
+
+            cost = float(product.get('base_price') or 0)
+            sale_price = calculate_sale_price(cost, markup)
+
+            odoo_data = {
+                'product_name': product.get('product_name'),
+                'supplier_sku': product.get('supplier_sku'),
+                'description': product.get('description'),
+                'base_price': sale_price,
+                'cost_price': cost,
+                'category_id': product.get('odoo_category_id'),
+                'default_category': 'SanMar Apparel',
+                'variants': [row_to_dict(v) for v in variants],
+                'images': [row_to_dict(i) for i in images],
+            }
+
+            result = odoo.create_or_update_product(odoo_data)
+            if result.get('success'):
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE products SET odoo_sync_status = 'synced', odoo_product_id = $1, updated_at = $2 WHERE id = $3",
+                        str(result.get('odoo_id', '')), utc_now(), product['id']
+                    )
+                synced += 1
+            else:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE products SET odoo_sync_status = 'failed', updated_at = $1 WHERE id = $2",
+                        utc_now(), product['id']
+                    )
+                failed += 1
+
+        msg = f"Auto-push complete: {synced} synced, {failed} failed out of {len(products)}"
+        await _update_sync_log(log_id, 'completed', msg, progress=100, total=len(products), processed=synced)
+        logger.info("Auto-push: %s", msg)
+
+    except Exception as e:
+        logger.error("Odoo push task error: %s", e)
+        await _update_sync_log(log_id, 'failed', f'Error: {str(e)}')
 
 async def _create_sync_log(supplier_id, supplier_name, sync_type, message):
     log_id = new_id()
@@ -1677,6 +1966,9 @@ async def sync_bulk_data_task(supplier_id: str, log_id: str):
                 message += f", {images_failed} image downloads failed"
             
             await _update_sync_log(log_id, 'completed', message, progress=100, total=len(products_by_style), processed=processed)
+            
+            # Auto-push to Odoo if enabled
+            await _auto_push_to_odoo_if_enabled(supplier_id)
             
     except Exception as e:
         logger.error(f"BulkData sync task error: {e}")

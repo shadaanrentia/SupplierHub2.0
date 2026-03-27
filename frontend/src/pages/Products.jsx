@@ -5,8 +5,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Package, Filter, ChevronLeft, ChevronRight, Check, X, Grid3X3, List, DollarSign, Warehouse, Image, Loader2, MoreVertical } from "lucide-react";
+import { Search, Package, Filter, ChevronLeft, ChevronRight, Check, X, Grid3X3, List, DollarSign, Warehouse, Image, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 
@@ -30,6 +31,8 @@ export default function Products() {
   const [brands, setBrands] = useState([]);
   const [viewMode, setViewMode] = useState("grid"); // grid or list
   const [syncing, setSyncing] = useState({});
+  const [selectedProducts, setSelectedProducts] = useState(new Set());
+  const [deleting, setDeleting] = useState(false);
 
   const fetchFilters = useCallback(async () => {
     try {
@@ -107,6 +110,61 @@ export default function Products() {
       toast.success(!currentValue ? "Selected for Odoo" : "Deselected");
     } catch (e) {
       toast.error("Failed to update selection");
+    }
+  };
+
+  const toggleProductSelect = (productId) => {
+    setSelectedProducts(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(productId)) {
+        newSet.delete(productId);
+      } else {
+        newSet.add(productId);
+      }
+      return newSet;
+    });
+  };
+
+  const selectAllProducts = () => {
+    if (selectedProducts.size === products.length) {
+      setSelectedProducts(new Set());
+    } else {
+      setSelectedProducts(new Set(products.map(p => p.id)));
+    }
+  };
+
+  const deleteSelectedProducts = async () => {
+    if (selectedProducts.size === 0) return;
+    if (!window.confirm(`Delete ${selectedProducts.size} selected product(s)?`)) return;
+    
+    setDeleting(true);
+    try {
+      await axios.post(`${API}/products/bulk-delete`, {
+        product_ids: Array.from(selectedProducts)
+      });
+      toast.success(`Deleted ${selectedProducts.size} products`);
+      setSelectedProducts(new Set());
+      fetchProducts();
+    } catch (e) {
+      toast.error("Failed to delete products");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const deleteAllProducts = async () => {
+    if (!window.confirm(`Are you sure you want to delete ALL ${total} products? This action cannot be undone.`)) return;
+    
+    setDeleting(true);
+    try {
+      await axios.delete(`${API}/products/delete-all`);
+      toast.success("All products deleted");
+      setSelectedProducts(new Set());
+      fetchProducts();
+    } catch (e) {
+      toast.error("Failed to delete all products");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -215,6 +273,54 @@ export default function Products() {
         </div>
       </div>
 
+      {/* Delete Toolbar (List View Only) */}
+      {viewMode === "list" && (
+        <div className="flex items-center justify-between p-3 bg-zinc-900/50 border border-zinc-800">
+          <div className="flex items-center gap-4">
+            <Checkbox 
+              checked={products.length > 0 && selectedProducts.size === products.length}
+              onCheckedChange={selectAllProducts}
+              data-testid="select-all-checkbox"
+            />
+            <span className="text-sm text-zinc-400">
+              {selectedProducts.size > 0 ? `${selectedProducts.size} selected` : "Select all"}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {selectedProducts.size > 0 && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={deleteSelectedProducts}
+                disabled={deleting}
+                className="rounded-none bg-red-900/50 hover:bg-red-900 border-red-800"
+                data-testid="delete-selected-btn"
+              >
+                {deleting ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Trash2 className="w-4 h-4 mr-1" />}
+                Delete Selected
+              </Button>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="rounded-none border-zinc-700 text-zinc-300">
+                  <MoreVertical className="w-4 h-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="bg-zinc-900 border-zinc-800">
+                <DropdownMenuItem 
+                  onClick={deleteAllProducts}
+                  className="text-red-400 focus:text-red-300 focus:bg-red-950/30"
+                  disabled={deleting}
+                >
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Delete All Products
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      )}
+
       {/* Product Grid/List */}
       {loading ? (
         <div className={viewMode === "grid" ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3" : "space-y-2"}>
@@ -322,9 +428,15 @@ export default function Products() {
           {products.map((product) => (
             <div
               key={product.id}
-              className="flex items-center gap-4 p-3 bg-zinc-900/50 border border-zinc-800 hover:border-zinc-700 transition-colors"
+              className={`flex items-center gap-4 p-3 bg-zinc-900/50 border transition-colors ${selectedProducts.has(product.id) ? "border-blue-600 bg-blue-950/20" : "border-zinc-800 hover:border-zinc-700"}`}
               data-testid={`product-row-${product.id}`}
             >
+              <Checkbox 
+                checked={selectedProducts.has(product.id)}
+                onCheckedChange={() => toggleProductSelect(product.id)}
+                data-testid={`select-product-${product.id}`}
+              />
+              
               <div 
                 className="w-16 h-16 bg-zinc-800/50 flex items-center justify-center overflow-hidden cursor-pointer shrink-0"
                 onClick={() => navigate(`/products/${product.id}`)}

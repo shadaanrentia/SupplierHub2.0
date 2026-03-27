@@ -154,7 +154,7 @@ export default function CategoryMapping() {
               data-testid="sync-categories-btn"
             >
               {syncing ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-              Sync Categories
+              Sync Categories from Odoo
             </Button>
           </div>
           <p className="text-sm text-zinc-500 mt-2">

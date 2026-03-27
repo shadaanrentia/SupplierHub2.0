@@ -26,7 +26,8 @@ const emptyForm = {
   media_password: "",
   endpoint_style: "",
   use_uat: false,
-  services: {}
+  services: {},
+  bulk_data_url: ""
 };
 
 export default function Suppliers() {
@@ -86,9 +87,10 @@ export default function Suppliers() {
       media_password: "",
       endpoint_style: s.endpoint_style || "",
       use_uat: s.use_uat || false,
-      services: s.services || {}
+      services: s.services || {},
+      bulk_data_url: s.bulk_data_url || ""
     });
-    setShowAdvanced(s.endpoint_style === "custom" || Object.keys(s.services || {}).length > 0);
+    setShowAdvanced(s.endpoint_style === "custom" || Object.keys(s.services || {}).length > 0 || s.bulk_data_url);
     setDialogOpen(true);
   };
 
@@ -231,6 +233,19 @@ export default function Suppliers() {
                 {showAdvanced && (
                   <div className="mt-4 space-y-3 p-3 bg-zinc-950/50 border border-zinc-800">
                     <p className="text-xs text-zinc-600">Override auto-generated endpoints with custom URLs (optional)</p>
+                    
+                    {/* Bulk Data URL */}
+                    <div>
+                      <label className="text-xs text-zinc-500 mb-1 block">Bulk Data API URL</label>
+                      <Input
+                        value={form.bulk_data_url || ""}
+                        onChange={(e) => setForm({ ...form, bulk_data_url: e.target.value })}
+                        className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-xs"
+                        placeholder="e.g., https://edi.atc-apparel.com/bulk-data/BulkDataService.php"
+                        data-testid="bulk-data-url-input"
+                      />
+                    </div>
+                    
                     {["product_data", "inventory", "pricing", "media"].map((svc) => (
                       <div key={svc}>
                         <label className="text-xs text-zinc-500 mb-1 block capitalize">{svc.replace("_", " ")} URL</label>
