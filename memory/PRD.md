@@ -29,6 +29,24 @@ Build a middleware application that integrates supplier product data using Promo
 
 ## What's Been Implemented
 
+### March 27, 2026 - APScheduler & Auto-Push to Odoo
+- **New Feature: Automated Background Sync Jobs**
+  - Created `backend/scheduler.py` using APScheduler's `AsyncIOScheduler`
+  - Scheduler starts on app startup, reads settings to configure jobs
+  - 3 job types: products (interval in hours), inventory (interval in minutes), pricing (interval in hours)
+  - Jobs auto-created/removed when `auto_sync_enabled` toggled in settings
+  - Settings changes trigger automatic job rescheduling
+  - New endpoints: `GET /api/scheduler/status`, `POST /api/scheduler/reschedule`
+- **New Feature: Auto-Push to Odoo after BulkData Sync**
+  - New `auto_push_to_odoo` setting (boolean toggle)
+  - After BulkData sync completes, checks if auto-push enabled
+  - If enabled, automatically pushes all pending products for that supplier to Odoo
+  - Creates separate sync log entry for the auto-push
+- **Frontend Settings Update**
+  - Added "Auto-push to Odoo after BulkData sync" toggle
+  - Added Scheduler Status panel showing RUNNING/STOPPED badge and scheduled jobs with next run times
+- **Bug Fix**: Fixed user CRUD endpoints (column name mismatch: `password_hash` → `hashed_password`)
+
 ### March 16, 2026 - BulkData Sync Feature Added
 - **New Feature: BulkData Service 1.0 Integration**
   - Added `get_bulk_data()` method to `promostandards.py`
@@ -194,12 +212,14 @@ Build a middleware application that integrates supplier product data using Promo
 - [ ] Get supplier IP whitelisting (ATC, S&S, etc.) - requires user to contact suppliers
 
 ### P1 (Important)
-- [ ] Implement APScheduler for automated periodic syncs
+- [x] Implement APScheduler for automated periodic syncs ✅ (March 27, 2026)
+- [x] Auto-push to Odoo after BulkData sync ✅ (March 27, 2026)
 - [ ] Re-sync products after IP whitelisting to get pricing/inventory/media data
 - [ ] Refactor server.py into smaller modules (routes/products.py, routes/odoo.py, etc.)
 
 ### P2 (Nice to have)
-- [ ] Add bulk data sync using BulkData SOAP endpoint
+- [x] Add bulk data sync using BulkData SOAP endpoint ✅
+- [ ] Image retry mechanism for failed downloads
 - [ ] Add product search by text index
 - [ ] Add pagination to variants table on detail page
 - [ ] Add export functionality (CSV/Excel)
