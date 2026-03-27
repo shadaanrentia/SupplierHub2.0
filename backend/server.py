@@ -1811,6 +1811,10 @@ async def sync_bulk_data_task(supplier_id: str, log_id: str):
             # Initialize connector
             connector = PromoStandardsConnector(supplier)
             
+            # Inject bulk_data_url from supplier if services doesn't have it
+            if 'bulk_data' not in connector.services and supplier.get('bulk_data_url'):
+                connector.services['bulk_data'] = supplier['bulk_data_url']
+            
             # Call BulkData API
             await _update_sync_log(log_id, 'running', 'Calling BulkData API (this may take a while)...', progress=10)
             result = connector.get_bulk_data()

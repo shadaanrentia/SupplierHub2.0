@@ -163,6 +163,12 @@ class PromoStandardsConnector:
             self.services = generate_endpoints(self.base_url, self.endpoint_style)
             logger.info(f"Auto-generated endpoints for {self.endpoint_style}: {list(self.services.keys())}")
 
+        # Ensure bulk_data endpoint exists if we have a base URL and style
+        if 'bulk_data' not in self.services and self.base_url and self.endpoint_style:
+            all_endpoints = generate_endpoints(self.base_url, self.endpoint_style)
+            if 'bulk_data' in all_endpoints:
+                self.services['bulk_data'] = all_endpoints['bulk_data']
+
         # Strip ?wsdl from endpoints (we need service endpoints, not WSDL URLs)
         for key in list(self.services.keys()):
             url = self.services[key]
