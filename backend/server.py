@@ -1969,6 +1969,43 @@ async def sync_bulk_data_task(supplier_id: str, log_id: str):
             if images_failed > 0:
                 message += f", {images_failed} image downloads failed"
             
+            await _update_sync_log(log_id, 'running', message + ". Enriching categories from Product Data API...", progress=96, total=len(products_by_style), processed=processed)
+            
+            # Enrich categories: BulkData doesn't include category info,
+            # so fetch from Product Data API for products missing categories
+            categories_updated = 0
+            categories_failed = 0
+            styles_needing_category = []
+            
+            rows = await conn.fetch(
+                "SELECT id, supplier_sku FROM products WHERE supplier_id = $1 AND (category IS NULL OR category = '')",
+                supplier_id
+            )
+            styles_needing_category = [(r['id'], r['supplier_sku']) for r in rows]
+            
+            if styles_needing_category:
+                logger.info(f"BulkData: Enriching categories for {len(styles_needing_category)} products")
+                for prod_id, sku in styles_needing_category:
+                    if running_syncs.get(task_id, {}).get("should_stop"):
+                        break
+                    try:
+                        prod_detail = connector.get_product(sku)
+                        if prod_detail.get('success') is not False:
+                            cat = prod_detail.get('category', '')
+                            if cat:
+                                await conn.execute(
+                                    "UPDATE products SET category = $1, updated_at = NOW() WHERE id = $2",
+                                    cat, prod_id
+                                )
+                                categories_updated += 1
+                    except Exception as e:
+                        categories_failed += 1
+                        logger.warning(f"Failed to get category for {sku}: {e}")
+                
+                message += f", {categories_updated} categories enriched"
+                if categories_failed > 0:
+                    message += f" ({categories_failed} category lookups failed)"
+            
             await _update_sync_log(log_id, 'completed', message, progress=100, total=len(products_by_style), processed=processed)
             
             # Auto-push to Odoo if enabled
@@ -1976,6 +2013,99 @@ async def sync_bulk_data_task(supplier_id: str, log_id: str):
             
     except Exception as e:
         logger.error(f"BulkData sync task error: {e}")
+        await _update_sync_log(log_id, 'failed', f'Error: {str(e)}')
+    finally:
+        running_syncs.pop(task_id, None)
+
+
+@api_router.post("/sync/enrich-categories/{supplier_id}")
+async def enrich_categories(supplier_id: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """
+    Enrich categories for products that have empty categories.
+    Fetches category data from the Product Data API for each product.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT supplier_name FROM suppliers WHERE id = $1", supplier_id)
+        if not row:
+            raise HTTPException(404, "Supplier not found")
+        supplier_name = row['supplier_name']
+
+        count = await conn.fetchval(
+            "SELECT COUNT(*) FROM products WHERE supplier_id = $1 AND (category IS NULL OR category = '')",
+            supplier_id
+        )
+
+    if count == 0:
+        return {"status": "no_action", "message": "All products already have categories"}
+
+    log_id = await _create_sync_log(supplier_id, supplier_name, "enrich_categories", f"Enriching categories for {count} products...")
+    background_tasks.add_task(enrich_categories_task, supplier_id, log_id)
+    return {"status": "started", "log_id": log_id, "task_id": f"enrich_{supplier_id}", "products_to_enrich": count}
+
+
+async def enrich_categories_task(supplier_id: str, log_id: str):
+    """Background task to enrich product categories from Product Data API."""
+    task_id = f"enrich_{supplier_id}"
+    running_syncs[task_id] = {"should_stop": False}
+
+    try:
+        async with pool.acquire() as conn:
+            supplier = await conn.fetchrow("SELECT * FROM suppliers WHERE id = $1", supplier_id)
+            if not supplier:
+                await _update_sync_log(log_id, 'failed', 'Supplier not found')
+                return
+
+            supplier = row_to_dict(supplier)
+            from promostandards import PromoStandardsConnector
+            connector = PromoStandardsConnector(supplier)
+
+            rows = await conn.fetch(
+                "SELECT id, supplier_sku FROM products WHERE supplier_id = $1 AND (category IS NULL OR category = '')",
+                supplier_id
+            )
+
+            if not rows:
+                await _update_sync_log(log_id, 'completed', 'No products need category enrichment', progress=100)
+                return
+
+            total = len(rows)
+            updated = 0
+            failed = 0
+
+            for i, r in enumerate(rows):
+                if running_syncs.get(task_id, {}).get("should_stop"):
+                    await _update_sync_log(log_id, 'stopped', f'Stopped. Enriched {updated}/{total} categories.')
+                    break
+
+                try:
+                    prod_detail = connector.get_product(r['supplier_sku'])
+                    cat = prod_detail.get('category', '')
+                    if cat:
+                        await conn.execute(
+                            "UPDATE products SET category = $1, updated_at = NOW() WHERE id = $2",
+                            cat, r['id']
+                        )
+                        updated += 1
+                    else:
+                        failed += 1
+                except Exception as e:
+                    failed += 1
+                    logger.warning(f"Category enrichment failed for {r['supplier_sku']}: {e}")
+
+                if (i + 1) % 10 == 0:
+                    progress = int(((i + 1) / total) * 100)
+                    await _update_sync_log(
+                        log_id, 'running',
+                        f'Enriched {updated}/{total} categories ({failed} failed)',
+                        progress=progress, total=total, processed=updated
+                    )
+
+            msg = f"Category enrichment complete: {updated} updated, {failed} failed out of {total}"
+            await _update_sync_log(log_id, 'completed', msg, progress=100, total=total, processed=updated)
+            logger.info(msg)
+
+    except Exception as e:
+        logger.error(f"Category enrichment error: {e}")
         await _update_sync_log(log_id, 'failed', f'Error: {str(e)}')
     finally:
         running_syncs.pop(task_id, None)

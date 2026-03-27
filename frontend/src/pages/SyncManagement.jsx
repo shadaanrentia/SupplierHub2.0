@@ -3,7 +3,7 @@ import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { RefreshCw, Play, Package, ArrowUpRight, Clock, AlertTriangle, Square, Zap, Loader2 } from "lucide-react";
+import { RefreshCw, Play, Package, ArrowUpRight, Clock, AlertTriangle, Square, Zap, Loader2, Tag } from "lucide-react";
 import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -113,6 +113,24 @@ export default function SyncManagement() {
     }
   };
 
+  const triggerEnrichCategories = async (supplierId, supplierName) => {
+    const key = `${supplierId}-enrich`;
+    setSyncing((prev) => ({ ...prev, [key]: true }));
+    try {
+      const res = await axios.post(`${API}/sync/enrich-categories/${supplierId}`);
+      if (res.data.status === "no_action") {
+        toast.info(res.data.message);
+      } else {
+        toast.success(`Category enrichment started for ${supplierName} (${res.data.products_to_enrich} products)`);
+      }
+      setTimeout(fetchData, 2000);
+    } catch (e) {
+      toast.error(`Failed to start category enrichment: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setSyncing((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
   return (
     <div className="p-6 space-y-6" data-testid="sync-page">
       <div className="flex items-center justify-between">
@@ -189,6 +207,22 @@ export default function SyncManagement() {
                       )}
                       Bulk Data
                     </Button>
+                    {/* Enrich Categories button */}
+                    <Button
+                      size="sm"
+                      onClick={() => triggerEnrichCategories(s.id, s.supplier_name)}
+                      disabled={syncing[`${s.id}-enrich`]}
+                      className="bg-amber-700 hover:bg-amber-600 text-white rounded-none text-xs border border-amber-600"
+                      data-testid={`enrich-categories-${s.id}`}
+                      title="Fetch categories from Product Data API for products missing categories"
+                    >
+                      {syncing[`${s.id}-enrich`] ? (
+                        <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                      ) : (
+                        <Tag className="w-3 h-3 mr-1" />
+                      )}
+                      Enrich Categories
+                    </Button>
                   </div>
                 </div>
               ))}
@@ -220,6 +254,8 @@ export default function SyncManagement() {
             <SelectItem value="inventory">Inventory</SelectItem>
             <SelectItem value="pricing">Pricing</SelectItem>
             <SelectItem value="media">Media</SelectItem>
+            <SelectItem value="bulk_data">Bulk Data</SelectItem>
+            <SelectItem value="enrich_categories">Enrich Categories</SelectItem>
             <SelectItem value="odoo_push">Odoo Push</SelectItem>
           </SelectContent>
         </Select>
