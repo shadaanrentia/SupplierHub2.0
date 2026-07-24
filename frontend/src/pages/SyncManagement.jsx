@@ -3,7 +3,7 @@ import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { RefreshCw, Play, Package, ArrowUpRight, Clock, AlertTriangle, Square, Zap, Loader2, Tag, ShoppingBag } from "lucide-react";
+import { RefreshCw, Play, Package, Clock, Square, Zap, Loader2, Tag, ShoppingBag } from "lucide-react";
 import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -14,12 +14,31 @@ function SyncBadge({ status }) {
     completed_with_errors: "bg-amber-950/50 text-amber-400 border-amber-800",
     failed: "bg-red-950/50 text-red-400 border-red-800",
     running: "bg-blue-950/50 text-blue-400 border-blue-800",
+    stopped: "bg-zinc-800 text-zinc-400 border-zinc-700",
     cancelled: "bg-zinc-800 text-zinc-400 border-zinc-700",
   };
   return (
     <span className={`inline-flex px-2 py-0.5 text-xs font-mono border rounded-none ${s[status] || s.running}`}>
       {status}
     </span>
+  );
+}
+
+function ProgressBar({ progress, processed, total, status }) {
+  if (status !== "running" || total === 0) return null;
+  const pct = Math.min(Math.max(progress || 0, 0), 100);
+  return (
+    <div className="flex items-center gap-2 mt-1" data-testid="sync-progress-bar">
+      <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+        <div
+          className="h-full bg-blue-500 transition-all duration-500 ease-out rounded-full"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="text-xs font-mono text-zinc-400 whitespace-nowrap">
+        {processed}/{total} ({pct}%)
+      </span>
+    </div>
   );
 }
 
@@ -30,6 +49,8 @@ export default function SyncManagement() {
   const [filterType, setFilterType] = useState("all");
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState({});
+
+  const hasRunningJobs = logs.some((l) => l.status === "running");
 
   const fetchData = useCallback(async () => {
     try {
@@ -54,17 +75,18 @@ export default function SyncManagement() {
 
   useEffect(() => {
     fetchData();
-    const iv = setInterval(fetchData, 10000);
+    // Poll faster (3s) when syncs are running, otherwise every 10s
+    const iv = setInterval(fetchData, hasRunningJobs ? 3000 : 10000);
     return () => clearInterval(iv);
-  }, [fetchData]);
+  }, [fetchData, hasRunningJobs]);
 
   const triggerSync = async (supplierId, type) => {
     const key = `${supplierId}-${type}`;
     setSyncing((prev) => ({ ...prev, [key]: true }));
     try {
-      const res = await axios.post(`${API}/sync/${type}/${supplierId}`);
+      await axios.post(`${API}/sync/${type}/${supplierId}`);
       toast.success(`${type} sync started`);
-      setTimeout(fetchData, 2000);
+      setTimeout(fetchData, 1500);
     } catch (e) {
       toast.error(`Failed to start ${type} sync`);
     } finally {
@@ -76,9 +98,9 @@ export default function SyncManagement() {
     const key = `${supplierId}-all`;
     setSyncing((prev) => ({ ...prev, [key]: true }));
     try {
-      const res = await axios.post(`${API}/sync/all/${supplierId}?limit=1500`);
-      toast.success(`Full sync started for ${supplierName} (Products → Inventory → Pricing → Media)`);
-      setTimeout(fetchData, 2000);
+      await axios.post(`${API}/sync/all/${supplierId}?limit=1500`);
+      toast.success(`Full sync started for ${supplierName}`);
+      setTimeout(fetchData, 1500);
     } catch (e) {
       toast.error(`Failed to start full sync: ${e.response?.data?.detail || e.message}`);
     } finally {
@@ -103,11 +125,11 @@ export default function SyncManagement() {
     const key = `${supplierId}-bulkdata`;
     setSyncing((prev) => ({ ...prev, [key]: true }));
     try {
-      const res = await axios.post(`${API}/sync/bulk-data/${supplierId}`);
-      toast.success(`BulkData sync started for ${supplierName} - downloading products with images`);
-      setTimeout(fetchData, 2000);
+      await axios.post(`${API}/sync/bulk-data/${supplierId}`);
+      toast.success(`BulkData sync started for ${supplierName}`);
+      setTimeout(fetchData, 1500);
     } catch (e) {
-      toast.error(`Failed to start BulkData sync: ${e.response?.data?.detail || e.message}`);
+      toast.error(`Failed: ${e.response?.data?.detail || e.message}`);
     } finally {
       setSyncing((prev) => ({ ...prev, [key]: false }));
     }
@@ -118,14 +140,11 @@ export default function SyncManagement() {
     setSyncing((prev) => ({ ...prev, [key]: true }));
     try {
       const res = await axios.post(`${API}/sync/enrich-categories/${supplierId}`);
-      if (res.data.status === "no_action") {
-        toast.info(res.data.message);
-      } else {
-        toast.success(`Category enrichment started for ${supplierName} (${res.data.products_to_enrich} products)`);
-      }
-      setTimeout(fetchData, 2000);
+      if (res.data.status === "no_action") toast.info(res.data.message);
+      else toast.success(`Category enrichment started for ${supplierName} (${res.data.products_to_enrich} products)`);
+      setTimeout(fetchData, 1500);
     } catch (e) {
-      toast.error(`Failed to start category enrichment: ${e.response?.data?.detail || e.message}`);
+      toast.error(`Failed: ${e.response?.data?.detail || e.message}`);
     } finally {
       setSyncing((prev) => ({ ...prev, [key]: false }));
     }
@@ -137,7 +156,7 @@ export default function SyncManagement() {
     try {
       const res = await axios.post(`${API}/sync/lightspeed/${supplierId}`);
       toast.success(`Lightspeed push started for ${supplierName} (${res.data.products_to_push} products)`);
-      setTimeout(fetchData, 2000);
+      setTimeout(fetchData, 1500);
     } catch (e) {
       toast.error(`Failed: ${e.response?.data?.detail || e.message}`);
     } finally {
@@ -172,86 +191,31 @@ export default function SyncManagement() {
                     <p className="text-xs font-mono text-zinc-500">{s.account_number}</p>
                   </div>
                   <div className="flex gap-2 flex-wrap justify-end">
-                    {/* Individual sync buttons */}
                     {["products", "inventory", "pricing", "media"].map((type) => (
-                      <Button
-                        key={type}
-                        size="sm"
-                        onClick={() => triggerSync(s.id, type)}
-                        disabled={syncing[`${s.id}-${type}`]}
-                        className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-none text-xs border border-zinc-700"
-                        data-testid={`sync-${type}-${s.id}`}
-                      >
-                        {syncing[`${s.id}-${type}`] ? (
-                          <RefreshCw className="w-3 h-3 animate-spin mr-1" />
-                        ) : (
-                          <Play className="w-3 h-3 mr-1" />
-                        )}
+                      <Button key={type} size="sm" onClick={() => triggerSync(s.id, type)} disabled={syncing[`${s.id}-${type}`]}
+                        className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-none text-xs border border-zinc-700" data-testid={`sync-${type}-${s.id}`}>
+                        {syncing[`${s.id}-${type}`] ? <RefreshCw className="w-3 h-3 animate-spin mr-1" /> : <Play className="w-3 h-3 mr-1" />}
                         {type}
                       </Button>
                     ))}
-                    {/* Sync All button */}
-                    <Button
-                      size="sm"
-                      onClick={() => triggerSyncAll(s.id, s.supplier_name)}
-                      disabled={syncing[`${s.id}-all`]}
-                      className="bg-emerald-700 hover:bg-emerald-600 text-white rounded-none text-xs border border-emerald-600"
-                      data-testid={`sync-all-${s.id}`}
-                    >
-                      {syncing[`${s.id}-all`] ? (
-                        <Loader2 className="w-3 h-3 animate-spin mr-1" />
-                      ) : (
-                        <Zap className="w-3 h-3 mr-1" />
-                      )}
-                      Sync All
+                    <Button size="sm" onClick={() => triggerSyncAll(s.id, s.supplier_name)} disabled={syncing[`${s.id}-all`]}
+                      className="bg-emerald-700 hover:bg-emerald-600 text-white rounded-none text-xs border border-emerald-600" data-testid={`sync-all-${s.id}`}>
+                      {syncing[`${s.id}-all`] ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Zap className="w-3 h-3 mr-1" />}Sync All
                     </Button>
-                    {/* BulkData Sync button - downloads products with images */}
-                    <Button
-                      size="sm"
-                      onClick={() => triggerBulkDataSync(s.id, s.supplier_name)}
-                      disabled={syncing[`${s.id}-bulkdata`]}
-                      className="bg-purple-700 hover:bg-purple-600 text-white rounded-none text-xs border border-purple-600"
-                      data-testid={`bulk-data-sync-${s.id}`}
-                      title="Downloads all products with images using BulkData API (once per day)"
-                    >
-                      {syncing[`${s.id}-bulkdata`] ? (
-                        <Loader2 className="w-3 h-3 animate-spin mr-1" />
-                      ) : (
-                        <Package className="w-3 h-3 mr-1" />
-                      )}
-                      Bulk Data
+                    <Button size="sm" onClick={() => triggerBulkDataSync(s.id, s.supplier_name)} disabled={syncing[`${s.id}-bulkdata`]}
+                      className="bg-purple-700 hover:bg-purple-600 text-white rounded-none text-xs border border-purple-600" data-testid={`bulk-data-sync-${s.id}`}
+                      title="Downloads all products with images using BulkData API (once per day)">
+                      {syncing[`${s.id}-bulkdata`] ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Package className="w-3 h-3 mr-1" />}Bulk Data
                     </Button>
-                    {/* Enrich Categories button */}
-                    <Button
-                      size="sm"
-                      onClick={() => triggerEnrichCategories(s.id, s.supplier_name)}
-                      disabled={syncing[`${s.id}-enrich`]}
-                      className="bg-amber-700 hover:bg-amber-600 text-white rounded-none text-xs border border-amber-600"
-                      data-testid={`enrich-categories-${s.id}`}
-                      title="Fetch categories from Product Data API for products missing categories"
-                    >
-                      {syncing[`${s.id}-enrich`] ? (
-                        <Loader2 className="w-3 h-3 animate-spin mr-1" />
-                      ) : (
-                        <Tag className="w-3 h-3 mr-1" />
-                      )}
-                      Enrich Categories
+                    <Button size="sm" onClick={() => triggerEnrichCategories(s.id, s.supplier_name)} disabled={syncing[`${s.id}-enrich`]}
+                      className="bg-amber-700 hover:bg-amber-600 text-white rounded-none text-xs border border-amber-600" data-testid={`enrich-categories-${s.id}`}
+                      title="Fetch categories for products missing categories">
+                      {syncing[`${s.id}-enrich`] ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Tag className="w-3 h-3 mr-1" />}Enrich Categories
                     </Button>
-                    {/* Push to Lightspeed button */}
-                    <Button
-                      size="sm"
-                      onClick={() => triggerLightspeedPush(s.id, s.supplier_name)}
-                      disabled={syncing[`${s.id}-lightspeed`]}
-                      className="bg-emerald-700 hover:bg-emerald-600 text-white rounded-none text-xs border border-emerald-600"
-                      data-testid={`push-lightspeed-${s.id}`}
-                      title="Push selected products to Lightspeed eCom"
-                    >
-                      {syncing[`${s.id}-lightspeed`] ? (
-                        <Loader2 className="w-3 h-3 animate-spin mr-1" />
-                      ) : (
-                        <ShoppingBag className="w-3 h-3 mr-1" />
-                      )}
-                      Push to Lightspeed
+                    <Button size="sm" onClick={() => triggerLightspeedPush(s.id, s.supplier_name)} disabled={syncing[`${s.id}-lightspeed`]}
+                      className="bg-emerald-700 hover:bg-emerald-600 text-white rounded-none text-xs border border-emerald-600" data-testid={`push-lightspeed-${s.id}`}
+                      title="Push selected products to Lightspeed Retail">
+                      {syncing[`${s.id}-lightspeed`] ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <ShoppingBag className="w-3 h-3 mr-1" />}Push to Lightspeed
                     </Button>
                   </div>
                 </div>
@@ -295,7 +259,10 @@ export default function SyncManagement() {
       {/* Sync Logs */}
       <Card className="bg-zinc-900/50 border-zinc-800 rounded-sm">
         <CardHeader className="p-4 border-b border-zinc-800/50">
-          <CardTitle className="font-heading text-sm font-bold uppercase text-zinc-400 tracking-wider">Sync Logs</CardTitle>
+          <CardTitle className="font-heading text-sm font-bold uppercase text-zinc-400 tracking-wider">
+            Sync Logs
+            {hasRunningJobs && <span className="ml-2 text-blue-400 text-xs font-normal animate-pulse">LIVE</span>}
+          </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           {loading ? (
@@ -312,9 +279,7 @@ export default function SyncManagement() {
                     <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Type</th>
                     <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Supplier</th>
                     <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Status</th>
-                    <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Processed</th>
-                    <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Created</th>
-                    <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Errors</th>
+                    <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Progress</th>
                     <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Message</th>
                     <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Started</th>
                     <th className="text-left p-3 text-xs font-mono text-zinc-500 uppercase tracking-wider">Actions</th>
@@ -326,29 +291,22 @@ export default function SyncManagement() {
                       <td className="p-3 text-sm font-mono">{log.sync_type}</td>
                       <td className="p-3 text-sm">{log.supplier_name}</td>
                       <td className="p-3"><SyncBadge status={log.status} /></td>
-                      <td className="p-3 text-sm font-mono tabular-nums">{log.products_processed || 0}</td>
-                      <td className="p-3 text-sm font-mono tabular-nums text-emerald-400">{log.products_created || 0}</td>
-                      <td className="p-3 text-sm font-mono tabular-nums">
-                        {log.errors_count > 0 ? <span className="text-red-400">{log.errors_count}</span> : <span className="text-zinc-600">0</span>}
+                      <td className="p-3 min-w-[180px]">
+                        {log.status === "running" ? (
+                          <ProgressBar progress={log.progress} processed={log.processed_items} total={log.total_items} status={log.status} />
+                        ) : log.total_items > 0 ? (
+                          <span className="text-xs font-mono text-zinc-400">{log.processed_items}/{log.total_items}</span>
+                        ) : (
+                          <span className="text-zinc-600 text-xs">—</span>
+                        )}
                       </td>
                       <td className="p-3 text-xs text-zinc-400 max-w-xs truncate">{log.message}</td>
-                      <td className="p-3 text-xs font-mono text-zinc-500">{log.started_at ? new Date(log.started_at).toLocaleString() : "-"}</td>
+                      <td className="p-3 text-xs font-mono text-zinc-500">{log.start_time ? new Date(log.start_time).toLocaleString() : "—"}</td>
                       <td className="p-3">
                         {log.status === "running" && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => stopSync(log.id)}
-                            disabled={syncing[`stop-${log.id}`]}
-                            className="text-red-400 hover:text-red-300 hover:bg-red-950/30 rounded-none h-7 px-2"
-                            data-testid={`stop-sync-${log.id}`}
-                          >
-                            {syncing[`stop-${log.id}`] ? (
-                              <Loader2 className="w-3 h-3 animate-spin" />
-                            ) : (
-                              <Square className="w-3 h-3 mr-1" />
-                            )}
-                            Stop
+                          <Button size="sm" variant="ghost" onClick={() => stopSync(log.id)} disabled={syncing[`stop-${log.id}`]}
+                            className="text-red-400 hover:text-red-300 hover:bg-red-950/30 rounded-none h-7 px-2" data-testid={`stop-sync-${log.id}`}>
+                            {syncing[`stop-${log.id}`] ? <Loader2 className="w-3 h-3 animate-spin" /> : <Square className="w-3 h-3 mr-1" />}Stop
                           </Button>
                         )}
                       </td>
