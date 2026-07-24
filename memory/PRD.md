@@ -29,25 +29,25 @@ Build a middleware application that integrates supplier product data using Promo
 
 ## What's Been Implemented
 
-### July 24, 2026 - Lightspeed eSeries Integration (Phase 2)
+### July 24, 2026 - Lightspeed Retail (X-Series) Integration (Phase 2)
 - **Multi-Platform Architecture**: Evolved from Odoo-only to provider-based multi-platform integration
-- **New Service: `lightspeed_service.py`** — Ecwid REST API v3 integration
-  - Base URL: `https://app.ecwid.com/api/v3/{storeId}/`
-  - Auth: Bearer secret_token in Authorization header
-  - Product CRUD: create/update with SKU-based search
-  - Variant sync via Ecwid combinations API
-  - Category management: fetch all (paginated), create, assign via categoryIds
-  - Image upload: binary body with Content-Type header
-  - Rate limit throttling (~600 req/min)
+- **Service: `lightspeed_service.py`** — Lightspeed Retail X-Series REST API v2.0
+  - Base URL: `https://{domain_prefix}.retail.lightspeed.app/api/2.0`
+  - Auth: Bearer Personal Token in Authorization header
+  - Product CRUD: create/update with SKU-based search (`?sku=`)
+  - Variant sync via X-Series variant parent-child model with variant_options
+  - Categories: `/product_categories` endpoint (list/create)
+  - Image upload: multipart form at `/products/{id}/actions/image_upload`
+  - Rate limit tracking with throttle and header-based backoff
   - Mock mode when credentials not configured
 - **DB Schema Additions**:
-  - `settings`: lightspeed_store_id, lightspeed_secret_token
+  - `settings`: lightspeed_store_id (domain prefix), lightspeed_secret_token (personal token)
   - `products`: selected_for_lightspeed, lightspeed_sync_status, lightspeed_product_id
   - `category_mapping`: lightspeed_category_id
-- **New API Endpoints**:
-  - `POST /api/settings/lightspeed/test` - Test Ecwid connection
-  - `GET /api/categories/lightspeed` - Fetch categories from Ecwid store
-  - `POST /api/sync/lightspeed/{supplier_id}` - Push products to Ecwid (background task)
+- **API Endpoints**:
+  - `POST /api/settings/lightspeed/test` - Test Lightspeed X-Series connection
+  - `GET /api/categories/lightspeed` - Fetch product categories from Lightspeed store
+  - `POST /api/sync/lightspeed/{supplier_id}` - Push products to Lightspeed (background task)
   - `POST /api/products/{id}/select-for-lightspeed` - Toggle Lightspeed selection
   - `POST /api/products/bulk-select-lightspeed` - Bulk toggle
 - **Frontend Updates**:
