@@ -31,23 +31,23 @@ Build a middleware application that integrates supplier product data using Promo
 
 ### July 24, 2026 - Lightspeed eSeries Integration (Phase 2)
 - **Multi-Platform Architecture**: Evolved from Odoo-only to provider-based multi-platform integration
-- **New Service: `lightspeed_service.py`**
-  - Full Lightspeed eCom REST API integration (Basic Auth with api_key:api_secret)
-  - Supports US1 and EU1 clusters
-  - Product CRUD: create/update with automatic SKU-based lookup
-  - Variant sync: pricing (priceExcl, priceCost), stock levels, SKU mapping
-  - Category management: fetch all categories (paginated), create, assign to products
-  - Image upload: base64 encoded attachment via product images endpoint
-  - Rate limit tracking and automatic throttling
+- **New Service: `lightspeed_service.py`** — Ecwid REST API v3 integration
+  - Base URL: `https://app.ecwid.com/api/v3/{storeId}/`
+  - Auth: Bearer secret_token in Authorization header
+  - Product CRUD: create/update with SKU-based search
+  - Variant sync via Ecwid combinations API
+  - Category management: fetch all (paginated), create, assign via categoryIds
+  - Image upload: binary body with Content-Type header
+  - Rate limit throttling (~600 req/min)
   - Mock mode when credentials not configured
 - **DB Schema Additions**:
-  - `settings`: lightspeed_api_key, lightspeed_api_secret, lightspeed_cluster, lightspeed_language
+  - `settings`: lightspeed_store_id, lightspeed_secret_token
   - `products`: selected_for_lightspeed, lightspeed_sync_status, lightspeed_product_id
   - `category_mapping`: lightspeed_category_id
 - **New API Endpoints**:
-  - `POST /api/settings/lightspeed/test` - Test Lightspeed connection
-  - `GET /api/categories/lightspeed` - Fetch categories from Lightspeed store
-  - `POST /api/sync/lightspeed/{supplier_id}` - Push products to Lightspeed (background task)
+  - `POST /api/settings/lightspeed/test` - Test Ecwid connection
+  - `GET /api/categories/lightspeed` - Fetch categories from Ecwid store
+  - `POST /api/sync/lightspeed/{supplier_id}` - Push products to Ecwid (background task)
   - `POST /api/products/{id}/select-for-lightspeed` - Toggle Lightspeed selection
   - `POST /api/products/bulk-select-lightspeed` - Bulk toggle
 - **Frontend Updates**:

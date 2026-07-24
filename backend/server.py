@@ -1170,6 +1170,9 @@ async def get_settings(user: dict = Depends(get_current_user)):
             s['odoo_api_key'] = '***'
         if s.get('lightspeed_secret_token'):
             s['lightspeed_secret_token'] = '***'
+        # Remove deprecated Lightspeed eCom fields (old schema columns still in DB)
+        for old_field in ('lightspeed_api_key', 'lightspeed_api_secret', 'lightspeed_cluster', 'lightspeed_language'):
+            s.pop(old_field, None)
         return s
 
 @api_router.put("/settings")
