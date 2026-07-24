@@ -4,12 +4,17 @@
 Build a middleware application that integrates supplier product data using PromoStandards SOAP APIs and synchronizes selected products into Odoo ERP. Central staging database, admin curation interface, automated sync jobs.
 
 ## Architecture
-- **Backend**: FastAPI (Python) with PostgreSQL
+- **Backend**: FastAPI (Python) with PostgreSQL — **Modular router architecture**
+  - `server.py`: Slim entrypoint (~175 lines) — startup, CORS, router registration
+  - `deps.py`: Shared dependencies — DB pool, helpers, auth deps, sync log helpers
+  - `models.py`: All Pydantic request/response models
+  - `routes/`: 11 route modules (auth, suppliers, products, dashboard, settings, sync, odoo, lightspeed, categories, preprocessing, media)
 - **Frontend**: React with Shadcn UI, Tailwind CSS, dark theme
 - **Database**: PostgreSQL 15 (users, suppliers, products, product_variants, product_media, sync_logs, settings, odoo_categories, category_mapping, product_sync_status)
 - **SOAP Client**: Raw XML over HTTP with XML escaping (no WSDL dependency - bypasses WAF blocking)
 - **Odoo Integration**: XML-RPC client for creating/updating products, variants, inventory, and images
-- **Flow**: PromoStandards SOAP APIs → Raw XML Connector → PostgreSQL Staging → Admin Curation → Pre-Processing → Odoo ERP
+- **Lightspeed Integration**: REST API v2.0 at `{domain_prefix}.retail.lightspeed.app` with Bearer Personal Token
+- **Flow**: PromoStandards SOAP APIs → Raw XML Connector → PostgreSQL Staging → Admin Curation → Pre-Processing → Odoo ERP / Lightspeed Retail
 
 ## User Personas
 - **Admin**: Manages suppliers, curates products, maps categories, triggers syncs, configures Odoo
@@ -28,6 +33,20 @@ Build a middleware application that integrates supplier product data using Promo
 10. Product pre-processing with configurable markup and validation
 
 ## What's Been Implemented
+
+### July 24, 2026 - Server Decomposition & Sync Progress Tracker
+- **Server Decomposition**: Broke 3300-line monolithic `server.py` into modular architecture:
+  - `server.py` (~175 lines): Startup/shutdown, CORS, health check, router registration
+  - `deps.py`: Shared pool, JWT auth, helpers (`utc_now`, `row_to_dict`, `calculate_sale_price`), sync log utilities
+  - `models.py`: All Pydantic models (UserLogin, SupplierCreate, SettingsUpdate, etc.)
+  - `routes/auth.py`, `routes/suppliers.py`, `routes/products.py`, `routes/dashboard.py`, `routes/settings.py`, `routes/sync.py`, `routes/odoo.py`, `routes/lightspeed.py`, `routes/categories.py`, `routes/preprocessing.py`, `routes/media.py`
+  - Key pattern: Route files use `import deps` + `deps.pool.acquire()` (not `from deps import pool`) to get the startup-assigned pool
+- **Sync Progress Tracker**:
+  - `ProgressBar` component shows live progress bar for running sync jobs (percentage + processed/total count)
+  - Polling interval: 3s when running jobs detected, 10s otherwise
+  - `GET /api/sync/log/{log_id}` endpoint for real-time single-log progress polling
+  - LIVE badge on Sync Logs header when jobs are running
+- **Lightspeed API URL Fix**: Changed from Ecwid (`app.ecwid.com`) to Lightspeed Retail X-Series (`{domain_prefix}.retail.lightspeed.app/api/2.0`)
 
 ### July 24, 2026 - Lightspeed Retail (X-Series) Integration (Phase 2)
 - **Multi-Platform Architecture**: Evolved from Odoo-only to provider-based multi-platform integration
