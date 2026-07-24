@@ -257,7 +257,7 @@ export default function Settings() {
       {/* Lightspeed eSeries (Ecwid) Connection */}
       <Card className="bg-zinc-900/50 border-zinc-800 rounded-sm">
         <CardHeader className="p-4 border-b border-zinc-800/50 flex flex-row items-center justify-between">
-          <CardTitle className="font-heading text-sm font-bold uppercase text-zinc-400 tracking-wider">Lightspeed eSeries (Ecwid) Connection</CardTitle>
+          <CardTitle className="font-heading text-sm font-bold uppercase text-zinc-400 tracking-wider">Lightspeed Retail (X-Series) Connection</CardTitle>
           <div className="flex gap-2">
             <Button
               variant="outline"
@@ -273,25 +273,26 @@ export default function Settings() {
           </div>
         </CardHeader>
         <CardContent className="p-4 space-y-4">
-          <p className="text-xs text-zinc-500">Connect to your Lightspeed eSeries (Ecwid) store using the Store ID and Secret Token from your Ecwid control panel.</p>
+          <p className="text-xs text-zinc-500">Connect to your Lightspeed Retail (X-Series) store. Find your Domain Prefix from your store URL (e.g., <span className="font-mono text-zinc-300">mystore</span>.retail.lightspeed.app) and generate a Personal Token in your Lightspeed admin.</p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="text-xs text-zinc-500 mb-1 block">Store ID</label>
+              <label className="text-xs text-zinc-500 mb-1 block">Domain Prefix</label>
               <Input
                 value={lsForm.lightspeed_store_id}
                 onChange={(e) => setLsForm({ ...lsForm, lightspeed_store_id: e.target.value })}
-                placeholder="Your Ecwid Store ID (e.g. 12345678)"
+                placeholder="e.g. mystore"
                 className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-sm"
                 data-testid="ls-store-id-input"
               />
+              <p className="text-xs text-zinc-600 mt-1">From https://<span className="text-zinc-400">[prefix]</span>.retail.lightspeed.app</p>
             </div>
             <div>
-              <label className="text-xs text-zinc-500 mb-1 block">Secret Token</label>
+              <label className="text-xs text-zinc-500 mb-1 block">Personal Token</label>
               <Input
                 type="password"
                 value={lsForm.lightspeed_secret_token}
                 onChange={(e) => setLsForm({ ...lsForm, lightspeed_secret_token: e.target.value })}
-                placeholder="Enter secret token"
+                placeholder="Enter personal token"
                 className="bg-zinc-950 border-zinc-800 rounded-none font-mono text-sm"
                 data-testid="ls-secret-token-input"
               />
