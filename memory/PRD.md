@@ -29,6 +29,34 @@ Build a middleware application that integrates supplier product data using Promo
 
 ## What's Been Implemented
 
+### July 24, 2026 - Lightspeed eSeries Integration (Phase 2)
+- **Multi-Platform Architecture**: Evolved from Odoo-only to provider-based multi-platform integration
+- **New Service: `lightspeed_service.py`**
+  - Full Lightspeed eCom REST API integration (Basic Auth with api_key:api_secret)
+  - Supports US1 and EU1 clusters
+  - Product CRUD: create/update with automatic SKU-based lookup
+  - Variant sync: pricing (priceExcl, priceCost), stock levels, SKU mapping
+  - Category management: fetch all categories (paginated), create, assign to products
+  - Image upload: base64 encoded attachment via product images endpoint
+  - Rate limit tracking and automatic throttling
+  - Mock mode when credentials not configured
+- **DB Schema Additions**:
+  - `settings`: lightspeed_api_key, lightspeed_api_secret, lightspeed_cluster, lightspeed_language
+  - `products`: selected_for_lightspeed, lightspeed_sync_status, lightspeed_product_id
+  - `category_mapping`: lightspeed_category_id
+- **New API Endpoints**:
+  - `POST /api/settings/lightspeed/test` - Test Lightspeed connection
+  - `GET /api/categories/lightspeed` - Fetch categories from Lightspeed store
+  - `POST /api/sync/lightspeed/{supplier_id}` - Push products to Lightspeed (background task)
+  - `POST /api/products/{id}/select-for-lightspeed` - Toggle Lightspeed selection
+  - `POST /api/products/bulk-select-lightspeed` - Bulk toggle
+- **Frontend Updates**:
+  - Settings: Lightspeed eCom Connection card (API Key, Secret, Cluster, Language)
+  - Category Mapping: Platform selector (Odoo / Lightspeed eCom) with dynamic UI
+  - Products: Dual toggle switches (Odoo blue + Lightspeed green) in grid and list views
+  - Sync Management: "Push to Lightspeed" button per supplier, filter option in sync logs
+- **Bug Fix**: Duplicate column assignment in settings update for lightspeed_api_secret
+
 ### March 27, 2026 - APScheduler & Auto-Push to Odoo
 - **New Feature: Automated Background Sync Jobs**
   - Created `backend/scheduler.py` using APScheduler's `AsyncIOScheduler`
@@ -214,6 +242,7 @@ Build a middleware application that integrates supplier product data using Promo
 ### P1 (Important)
 - [x] Implement APScheduler for automated periodic syncs ✅ (March 27, 2026)
 - [x] Auto-push to Odoo after BulkData sync ✅ (March 27, 2026)
+- [x] Lightspeed eSeries Integration (Phase 2A+2B) ✅ (July 24, 2026)
 - [ ] Re-sync products after IP whitelisting to get pricing/inventory/media data
 - [ ] Refactor server.py into smaller modules (routes/products.py, routes/odoo.py, etc.)
 
