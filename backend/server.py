@@ -13,6 +13,8 @@ from pathlib import Path
 
 import deps
 from deps import new_id, hash_password, utc_now
+import subprocess
+import time as _time
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -25,9 +27,40 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
+def _ensure_postgresql():
+    """Auto-start PostgreSQL if it's not running."""
+    for attempt in range(3):
+        try:
+            result = subprocess.run(["pg_isready", "-h", "localhost"], capture_output=True, timeout=5)
+            if result.returncode == 0:
+                return True
+        except FileNotFoundError:
+            # pg_isready not installed, try installing and starting
+            subprocess.run(["apt-get", "install", "-y", "-qq", "postgresql", "postgresql-client"],
+                           capture_output=True, timeout=120)
+        except Exception:
+            pass
+        # Try to start PostgreSQL
+        try:
+            subprocess.run(["pg_ctlcluster", "15", "main", "start"], capture_output=True, timeout=30)
+            _time.sleep(2)
+            # Ensure DB user and database exist
+            subprocess.run(["sudo", "-u", "postgres", "psql", "-c",
+                           "CREATE USER supplierhub WITH PASSWORD 'supplierhub_pass' CREATEDB;"],
+                           capture_output=True, timeout=10)
+            subprocess.run(["sudo", "-u", "postgres", "psql", "-c",
+                           "CREATE DATABASE supplierhub_db OWNER supplierhub;"],
+                           capture_output=True, timeout=10)
+        except Exception as e:
+            logger.warning(f"PostgreSQL start attempt {attempt+1} failed: {e}")
+            _time.sleep(2)
+    return False
+
+
 # ==================== STARTUP & SHUTDOWN ====================
 @app.on_event("startup")
 async def startup():
+    _ensure_postgresql()
     deps.pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
     pool = deps.pool
 
