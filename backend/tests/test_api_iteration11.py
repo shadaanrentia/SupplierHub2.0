@@ -9,7 +9,7 @@ import os
 
 BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
 if not BASE_URL:
-    BASE_URL = "https://supplier-sync-18.preview.emergentagent.com"
+    BASE_URL = "https://product-bridge-23.preview.emergentagent.com"
 
 
 class TestHealth:

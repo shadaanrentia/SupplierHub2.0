@@ -15,7 +15,7 @@ import sys
 # Add backend to path for importing LightspeedService
 sys.path.insert(0, '/app/backend')
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://supplier-sync-18.preview.emergentagent.com').rstrip('/')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'https://product-bridge-23.preview.emergentagent.com').rstrip('/')
 
 
 class TestAuth:
