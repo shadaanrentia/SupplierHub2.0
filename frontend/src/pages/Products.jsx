@@ -107,7 +107,22 @@ export default function Products() {
       setProducts((prev) =>
         prev.map((p) => (p.id === productId ? { ...p, selected_for_odoo: !currentValue } : p))
       );
-      toast.success(!currentValue ? "Selected for Odoo" : "Deselected");
+      toast.success(!currentValue ? "Selected for Odoo" : "Deselected from Odoo");
+    } catch (e) {
+      toast.error("Failed to update selection");
+    }
+  };
+
+  const toggleLightspeedSelection = async (productId, currentValue) => {
+    try {
+      await axios.post(`${API}/products/${productId}/select-for-lightspeed`, {
+        product_id: productId,
+        selected: !currentValue,
+      });
+      setProducts((prev) =>
+        prev.map((p) => (p.id === productId ? { ...p, selected_for_lightspeed: !currentValue } : p))
+      );
+      toast.success(!currentValue ? "Selected for Lightspeed" : "Deselected from Lightspeed");
     } catch (e) {
       toast.error("Failed to update selection");
     }
@@ -409,12 +424,21 @@ export default function Products() {
                   </div>
 
                   <div className="flex items-center justify-between pt-1 border-t border-zinc-800/50">
-                    <span className="text-xs text-zinc-400">Odoo Sync</span>
+                    <span className="text-xs text-zinc-400">Odoo</span>
                     <Switch
                       checked={product.selected_for_odoo}
                       onCheckedChange={() => toggleSelection(product.id, product.selected_for_odoo)}
                       data-testid={`odoo-toggle-${product.id}`}
                       className="data-[state=checked]:bg-blue-600"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-zinc-400">Lightspeed</span>
+                    <Switch
+                      checked={product.selected_for_lightspeed}
+                      onCheckedChange={() => toggleLightspeedSelection(product.id, product.selected_for_lightspeed)}
+                      data-testid={`ls-toggle-${product.id}`}
+                      className="data-[state=checked]:bg-emerald-600"
                     />
                   </div>
                 </div>
@@ -505,6 +529,15 @@ export default function Products() {
                   onCheckedChange={() => toggleSelection(product.id, product.selected_for_odoo)}
                   data-testid={`odoo-toggle-list-${product.id}`}
                   className="data-[state=checked]:bg-blue-600"
+                />
+              </div>
+              <div className="flex items-center gap-2 shrink-0 border-l border-zinc-800 pl-3">
+                <span className="text-xs text-zinc-500">LS</span>
+                <Switch
+                  checked={product.selected_for_lightspeed}
+                  onCheckedChange={() => toggleLightspeedSelection(product.id, product.selected_for_lightspeed)}
+                  data-testid={`ls-toggle-list-${product.id}`}
+                  className="data-[state=checked]:bg-emerald-600"
                 />
               </div>
             </div>

@@ -171,6 +171,10 @@ class SettingsUpdate(BaseModel):
     preferred_warehouse: Optional[str] = None
     markup_percentage: Optional[float] = None
     auto_push_to_odoo: Optional[bool] = None
+    lightspeed_api_key: Optional[str] = None
+    lightspeed_api_secret: Optional[str] = None
+    lightspeed_cluster: Optional[str] = None
+    lightspeed_language: Optional[str] = None
 
 
 # ==================== STARTUP & SHUTDOWN ====================
@@ -379,6 +383,36 @@ async def startup():
         ''')
         await conn.execute('''
             ALTER TABLE settings ADD COLUMN IF NOT EXISTS auto_push_to_odoo BOOLEAN DEFAULT FALSE
+        ''')
+        
+        # Lightspeed eCom settings columns
+        await conn.execute('''
+            ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_api_key VARCHAR(500) DEFAULT ''
+        ''')
+        await conn.execute('''
+            ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_api_secret VARCHAR(500) DEFAULT ''
+        ''')
+        await conn.execute('''
+            ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_cluster VARCHAR(10) DEFAULT 'us1'
+        ''')
+        await conn.execute('''
+            ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_language VARCHAR(10) DEFAULT 'en'
+        ''')
+        
+        # Add lightspeed_category_id to category_mapping
+        await conn.execute('''
+            ALTER TABLE category_mapping ADD COLUMN IF NOT EXISTS lightspeed_category_id INTEGER
+        ''')
+        
+        # Add destination platform tracking to products
+        await conn.execute('''
+            ALTER TABLE products ADD COLUMN IF NOT EXISTS lightspeed_sync_status VARCHAR(50) DEFAULT 'pending'
+        ''')
+        await conn.execute('''
+            ALTER TABLE products ADD COLUMN IF NOT EXISTS lightspeed_product_id VARCHAR(100)
+        ''')
+        await conn.execute('''
+            ALTER TABLE products ADD COLUMN IF NOT EXISTS selected_for_lightspeed BOOLEAN DEFAULT FALSE
         ''')
         
         # Create default admin user
@@ -987,6 +1021,26 @@ async def bulk_select(data: BulkSelectRequest, user: dict = Depends(get_current_
         """, data.selected, status, utc_now(), data.product_ids)
         return {"status": "updated"}
 
+@api_router.post("/products/{product_id}/select-for-lightspeed")
+async def toggle_lightspeed_selection(product_id: str, data: ProductSelectRequest, user: dict = Depends(get_current_user)):
+    async with pool.acquire() as conn:
+        status = "pending" if data.selected else "not_selected"
+        result = await conn.execute("""
+            UPDATE products SET selected_for_lightspeed = $1, lightspeed_sync_status = $2, updated_at = $3 WHERE id = $4
+        """, data.selected, status, utc_now(), product_id)
+        if result == "UPDATE 0":
+            raise HTTPException(404, "Product not found")
+        return {"status": "updated", "selected_for_lightspeed": data.selected}
+
+@api_router.post("/products/bulk-select-lightspeed")
+async def bulk_select_lightspeed(data: BulkSelectRequest, user: dict = Depends(get_current_user)):
+    async with pool.acquire() as conn:
+        status = "pending" if data.selected else "not_selected"
+        await conn.execute("""
+            UPDATE products SET selected_for_lightspeed = $1, lightspeed_sync_status = $2, updated_at = $3 WHERE id = ANY($4)
+        """, data.selected, status, utc_now(), data.product_ids)
+        return {"status": "updated"}
+
 class BulkDeleteRequest(BaseModel):
     product_ids: list
 
@@ -1020,6 +1074,7 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
     async with pool.acquire() as conn:
         total_products = await conn.fetchval("SELECT COUNT(*) FROM products")
         selected_products = await conn.fetchval("SELECT COUNT(*) FROM products WHERE selected_for_odoo = TRUE")
+        selected_lightspeed = await conn.fetchval("SELECT COUNT(*) FROM products WHERE selected_for_lightspeed = TRUE")
         total_suppliers = await conn.fetchval("SELECT COUNT(*) FROM suppliers")
         active_suppliers = await conn.fetchval("SELECT COUNT(*) FROM suppliers WHERE status = 'active'")
         synced_products = await conn.fetchval("SELECT COUNT(*) FROM products WHERE odoo_sync_status = 'synced'")
@@ -1060,6 +1115,7 @@ async def get_dashboard_stats(user: dict = Depends(get_current_user)):
         return {
             "total_products": total_products,
             "selected_for_odoo": selected_products,
+            "selected_for_lightspeed": selected_lightspeed,
             "synced_to_odoo": synced_products,
             "total_suppliers": total_suppliers,
             "active_suppliers": active_suppliers,
@@ -1120,6 +1176,8 @@ async def get_settings(user: dict = Depends(get_current_user)):
         s = row_to_dict(row)
         if s.get('odoo_api_key'):
             s['odoo_api_key'] = '***'
+        if s.get('lightspeed_api_secret'):
+            s['lightspeed_api_secret'] = '***'
         return s
 
 @api_router.put("/settings")
@@ -1129,18 +1187,25 @@ async def update_settings(data: SettingsUpdate, user: dict = Depends(get_admin_u
         values = []
         param_idx = 1
         
+        # Regular fields (not secrets)
         for field in ['sync_products_interval_hours', 'sync_inventory_interval_minutes', 'sync_pricing_interval_hours',
                       'auto_sync_enabled', 'odoo_url', 'odoo_db', 'odoo_username', 'preferred_warehouse', 'markup_percentage',
-                      'auto_push_to_odoo']:
+                      'auto_push_to_odoo', 'lightspeed_api_key', 'lightspeed_cluster', 'lightspeed_language']:
             val = getattr(data, field, None)
             if val is not None:
                 update_fields.append(f"{field} = ${param_idx}")
                 values.append(val)
                 param_idx += 1
         
+        # Handle secret fields separately (only update if not masked)
         if data.odoo_api_key and data.odoo_api_key != '***':
             update_fields.append(f"odoo_api_key = ${param_idx}")
             values.append(data.odoo_api_key)
+            param_idx += 1
+        
+        if data.lightspeed_api_secret and data.lightspeed_api_secret != '***':
+            update_fields.append(f"lightspeed_api_secret = ${param_idx}")
+            values.append(data.lightspeed_api_secret)
             param_idx += 1
         
         update_fields.append(f"updated_at = ${param_idx}")
@@ -1181,6 +1246,127 @@ async def reschedule_jobs(user: dict = Depends(get_admin_user)):
     await apply_schedule_from_settings()
     from scheduler import get_scheduler_status
     return {"status": "rescheduled", **get_scheduler_status()}
+
+
+# ==================== LIGHTSPEED ROUTES ====================
+@api_router.post("/settings/lightspeed/test")
+async def test_lightspeed_connection(user: dict = Depends(get_current_user)):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT lightspeed_api_key, lightspeed_api_secret, lightspeed_cluster, lightspeed_language FROM settings WHERE id = 'system_settings'")
+    if not row:
+        raise HTTPException(404, "Settings not found")
+    from lightspeed_service import LightspeedService
+    ls = LightspeedService(row['lightspeed_api_key'], row['lightspeed_api_secret'], row['lightspeed_cluster'], row['lightspeed_language'])
+    return ls.test_connection()
+
+@api_router.get("/categories/lightspeed")
+async def get_lightspeed_categories(user: dict = Depends(get_current_user)):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT lightspeed_api_key, lightspeed_api_secret, lightspeed_cluster, lightspeed_language FROM settings WHERE id = 'system_settings'")
+    if not row:
+        raise HTTPException(404, "Settings not found")
+    from lightspeed_service import LightspeedService
+    ls = LightspeedService(row['lightspeed_api_key'], row['lightspeed_api_secret'], row['lightspeed_cluster'], row['lightspeed_language'])
+    return ls.get_categories()
+
+@api_router.post("/sync/lightspeed/{supplier_id}")
+async def push_to_lightspeed(supplier_id: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    """Push selected products to Lightspeed eCom."""
+    async with pool.acquire() as conn:
+        supplier = await conn.fetchrow("SELECT supplier_name FROM suppliers WHERE id = $1", supplier_id)
+        if not supplier:
+            raise HTTPException(404, "Supplier not found")
+        count = await conn.fetchval(
+            "SELECT COUNT(*) FROM products WHERE selected_for_lightspeed = TRUE AND lightspeed_sync_status = 'pending' AND supplier_id = $1",
+            supplier_id
+        )
+    log_id = await _create_sync_log(supplier_id, supplier['supplier_name'], "lightspeed_push", f"Pushing {count} products to Lightspeed...")
+    background_tasks.add_task(lightspeed_push_task, supplier_id, log_id)
+    return {"status": "started", "log_id": log_id, "products_to_push": count}
+
+async def lightspeed_push_task(supplier_id: str, log_id: str):
+    """Background task to push products to Lightspeed eCom."""
+    from lightspeed_service import LightspeedService
+    try:
+        async with pool.acquire() as conn:
+            settings_row = await conn.fetchrow("SELECT * FROM settings WHERE id = 'system_settings'")
+            settings = row_to_dict(settings_row)
+            markup = float(settings.get('markup_percentage') or 40)
+
+            ls = LightspeedService(
+                settings.get('lightspeed_api_key', ''),
+                settings.get('lightspeed_api_secret', ''),
+                settings.get('lightspeed_cluster', 'us1'),
+                settings.get('lightspeed_language', 'en')
+            )
+
+            conn_test = ls.test_connection()
+            if not conn_test.get('connected'):
+                await _update_sync_log(log_id, 'failed', f"Lightspeed connection failed: {conn_test.get('message')}")
+                return
+
+            products = await conn.fetch('''
+                SELECT p.*, cm.lightspeed_category_id
+                FROM products p
+                LEFT JOIN category_mapping cm ON p.category = cm.supplier_category_name
+                WHERE p.selected_for_lightspeed = TRUE AND p.lightspeed_sync_status = 'pending' AND p.supplier_id = $1
+            ''', supplier_id)
+
+        if not products:
+            await _update_sync_log(log_id, 'completed', 'No pending products for Lightspeed', progress=100)
+            return
+
+        synced = 0
+        failed = 0
+        total = len(products)
+
+        for i, p in enumerate(products):
+            product = row_to_dict(p)
+            async with pool.acquire() as conn:
+                variants = await conn.fetch("SELECT * FROM product_variants WHERE product_id = $1", product['id'])
+                images = await conn.fetch("SELECT * FROM product_media WHERE product_id = $1", product['id'])
+
+            cost = float(product.get('base_price') or 0)
+            sale_price = calculate_sale_price(cost, markup)
+
+            ls_data = {
+                'product_name': product.get('product_name'),
+                'supplier_sku': product.get('supplier_sku'),
+                'description': product.get('description'),
+                'base_price': sale_price,
+                'cost_price': cost,
+                'category_id': product.get('lightspeed_category_id'),
+                'variants': [row_to_dict(v) for v in variants],
+                'images': [row_to_dict(img) for img in images],
+            }
+
+            result = ls.create_or_update_product(ls_data)
+            if result.get('success'):
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE products SET lightspeed_sync_status = 'synced', lightspeed_product_id = $1, updated_at = $2 WHERE id = $3",
+                        str(result.get('lightspeed_id', '')), utc_now(), product['id']
+                    )
+                synced += 1
+            else:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE products SET lightspeed_sync_status = 'failed', updated_at = $1 WHERE id = $2",
+                        utc_now(), product['id']
+                    )
+                failed += 1
+
+            if (i + 1) % 5 == 0:
+                progress = int(((i + 1) / total) * 100)
+                await _update_sync_log(log_id, 'running', f'Pushed {synced}/{total} to Lightspeed ({failed} failed)', progress=progress, total=total, processed=synced)
+
+        msg = f"Lightspeed push complete: {synced} synced, {failed} failed out of {total}"
+        await _update_sync_log(log_id, 'completed', msg, progress=100, total=total, processed=synced)
+        logger.info(msg)
+
+    except Exception as e:
+        logger.error(f"Lightspeed push error: {e}")
+        await _update_sync_log(log_id, 'failed', f'Error: {str(e)}')
 
 
 # ==================== SYNC ROUTES ====================
@@ -2533,21 +2719,23 @@ async def get_category_mappings(user: dict = Depends(get_current_user)):
 
 @api_router.post("/category-mappings")
 async def create_or_update_mapping(data: dict, user: dict = Depends(get_current_user)):
-    """Create or update a category mapping."""
+    """Create or update a category mapping. Supports both Odoo and Lightspeed category IDs."""
     supplier_category = data.get('supplier_category_name')
     odoo_category_id = data.get('odoo_category_id')
+    lightspeed_category_id = data.get('lightspeed_category_id')
     
     if not supplier_category:
         raise HTTPException(400, "Supplier category name is required")
     
     async with pool.acquire() as conn:
         await conn.execute('''
-            INSERT INTO category_mapping (id, supplier_category_name, odoo_category_id, updated_at)
-            VALUES ($1, $2, $3, NOW())
+            INSERT INTO category_mapping (id, supplier_category_name, odoo_category_id, lightspeed_category_id, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
             ON CONFLICT (supplier_category_name) DO UPDATE SET
-                odoo_category_id = EXCLUDED.odoo_category_id,
+                odoo_category_id = COALESCE(EXCLUDED.odoo_category_id, category_mapping.odoo_category_id),
+                lightspeed_category_id = COALESCE(EXCLUDED.lightspeed_category_id, category_mapping.lightspeed_category_id),
                 updated_at = NOW()
-        ''', new_id(), supplier_category, odoo_category_id)
+        ''', new_id(), supplier_category, odoo_category_id, lightspeed_category_id)
     
     return {"success": True}
 

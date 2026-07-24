@@ -3,7 +3,7 @@ import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { RefreshCw, Play, Package, ArrowUpRight, Clock, AlertTriangle, Square, Zap, Loader2, Tag } from "lucide-react";
+import { RefreshCw, Play, Package, ArrowUpRight, Clock, AlertTriangle, Square, Zap, Loader2, Tag, ShoppingBag } from "lucide-react";
 import { toast } from "sonner";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -131,6 +131,20 @@ export default function SyncManagement() {
     }
   };
 
+  const triggerLightspeedPush = async (supplierId, supplierName) => {
+    const key = `${supplierId}-lightspeed`;
+    setSyncing((prev) => ({ ...prev, [key]: true }));
+    try {
+      const res = await axios.post(`${API}/sync/lightspeed/${supplierId}`);
+      toast.success(`Lightspeed push started for ${supplierName} (${res.data.products_to_push} products)`);
+      setTimeout(fetchData, 2000);
+    } catch (e) {
+      toast.error(`Failed: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setSyncing((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
   return (
     <div className="p-6 space-y-6" data-testid="sync-page">
       <div className="flex items-center justify-between">
@@ -223,6 +237,22 @@ export default function SyncManagement() {
                       )}
                       Enrich Categories
                     </Button>
+                    {/* Push to Lightspeed button */}
+                    <Button
+                      size="sm"
+                      onClick={() => triggerLightspeedPush(s.id, s.supplier_name)}
+                      disabled={syncing[`${s.id}-lightspeed`]}
+                      className="bg-emerald-700 hover:bg-emerald-600 text-white rounded-none text-xs border border-emerald-600"
+                      data-testid={`push-lightspeed-${s.id}`}
+                      title="Push selected products to Lightspeed eCom"
+                    >
+                      {syncing[`${s.id}-lightspeed`] ? (
+                        <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                      ) : (
+                        <ShoppingBag className="w-3 h-3 mr-1" />
+                      )}
+                      Push to Lightspeed
+                    </Button>
                   </div>
                 </div>
               ))}
@@ -257,6 +287,7 @@ export default function SyncManagement() {
             <SelectItem value="bulk_data">Bulk Data</SelectItem>
             <SelectItem value="enrich_categories">Enrich Categories</SelectItem>
             <SelectItem value="odoo_push">Odoo Push</SelectItem>
+            <SelectItem value="lightspeed_push">Lightspeed Push</SelectItem>
           </SelectContent>
         </Select>
       </div>
