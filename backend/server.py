@@ -171,10 +171,8 @@ class SettingsUpdate(BaseModel):
     preferred_warehouse: Optional[str] = None
     markup_percentage: Optional[float] = None
     auto_push_to_odoo: Optional[bool] = None
-    lightspeed_api_key: Optional[str] = None
-    lightspeed_api_secret: Optional[str] = None
-    lightspeed_cluster: Optional[str] = None
-    lightspeed_language: Optional[str] = None
+    lightspeed_store_id: Optional[str] = None
+    lightspeed_secret_token: Optional[str] = None
 
 
 # ==================== STARTUP & SHUTDOWN ====================
@@ -385,18 +383,12 @@ async def startup():
             ALTER TABLE settings ADD COLUMN IF NOT EXISTS auto_push_to_odoo BOOLEAN DEFAULT FALSE
         ''')
         
-        # Lightspeed eCom settings columns
+        # Lightspeed eSeries (Ecwid) settings columns
         await conn.execute('''
-            ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_api_key VARCHAR(500) DEFAULT ''
+            ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_store_id VARCHAR(100) DEFAULT ''
         ''')
         await conn.execute('''
-            ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_api_secret VARCHAR(500) DEFAULT ''
-        ''')
-        await conn.execute('''
-            ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_cluster VARCHAR(10) DEFAULT 'us1'
-        ''')
-        await conn.execute('''
-            ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_language VARCHAR(10) DEFAULT 'en'
+            ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_secret_token VARCHAR(500) DEFAULT ''
         ''')
         
         # Add lightspeed_category_id to category_mapping
@@ -1176,8 +1168,8 @@ async def get_settings(user: dict = Depends(get_current_user)):
         s = row_to_dict(row)
         if s.get('odoo_api_key'):
             s['odoo_api_key'] = '***'
-        if s.get('lightspeed_api_secret'):
-            s['lightspeed_api_secret'] = '***'
+        if s.get('lightspeed_secret_token'):
+            s['lightspeed_secret_token'] = '***'
         return s
 
 @api_router.put("/settings")
@@ -1190,7 +1182,7 @@ async def update_settings(data: SettingsUpdate, user: dict = Depends(get_admin_u
         # Regular fields (not secrets)
         for field in ['sync_products_interval_hours', 'sync_inventory_interval_minutes', 'sync_pricing_interval_hours',
                       'auto_sync_enabled', 'odoo_url', 'odoo_db', 'odoo_username', 'preferred_warehouse', 'markup_percentage',
-                      'auto_push_to_odoo', 'lightspeed_api_key', 'lightspeed_cluster', 'lightspeed_language']:
+                      'auto_push_to_odoo', 'lightspeed_store_id']:
             val = getattr(data, field, None)
             if val is not None:
                 update_fields.append(f"{field} = ${param_idx}")
@@ -1203,9 +1195,9 @@ async def update_settings(data: SettingsUpdate, user: dict = Depends(get_admin_u
             values.append(data.odoo_api_key)
             param_idx += 1
         
-        if data.lightspeed_api_secret and data.lightspeed_api_secret != '***':
-            update_fields.append(f"lightspeed_api_secret = ${param_idx}")
-            values.append(data.lightspeed_api_secret)
+        if data.lightspeed_secret_token and data.lightspeed_secret_token != '***':
+            update_fields.append(f"lightspeed_secret_token = ${param_idx}")
+            values.append(data.lightspeed_secret_token)
             param_idx += 1
         
         update_fields.append(f"updated_at = ${param_idx}")
@@ -1252,21 +1244,21 @@ async def reschedule_jobs(user: dict = Depends(get_admin_user)):
 @api_router.post("/settings/lightspeed/test")
 async def test_lightspeed_connection(user: dict = Depends(get_current_user)):
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT lightspeed_api_key, lightspeed_api_secret, lightspeed_cluster, lightspeed_language FROM settings WHERE id = 'system_settings'")
+        row = await conn.fetchrow("SELECT lightspeed_store_id, lightspeed_secret_token FROM settings WHERE id = 'system_settings'")
     if not row:
         raise HTTPException(404, "Settings not found")
     from lightspeed_service import LightspeedService
-    ls = LightspeedService(row['lightspeed_api_key'], row['lightspeed_api_secret'], row['lightspeed_cluster'], row['lightspeed_language'])
+    ls = LightspeedService(row['lightspeed_store_id'], row['lightspeed_secret_token'])
     return ls.test_connection()
 
 @api_router.get("/categories/lightspeed")
 async def get_lightspeed_categories(user: dict = Depends(get_current_user)):
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT lightspeed_api_key, lightspeed_api_secret, lightspeed_cluster, lightspeed_language FROM settings WHERE id = 'system_settings'")
+        row = await conn.fetchrow("SELECT lightspeed_store_id, lightspeed_secret_token FROM settings WHERE id = 'system_settings'")
     if not row:
         raise HTTPException(404, "Settings not found")
     from lightspeed_service import LightspeedService
-    ls = LightspeedService(row['lightspeed_api_key'], row['lightspeed_api_secret'], row['lightspeed_cluster'], row['lightspeed_language'])
+    ls = LightspeedService(row['lightspeed_store_id'], row['lightspeed_secret_token'])
     return ls.get_categories()
 
 @api_router.post("/sync/lightspeed/{supplier_id}")
@@ -1294,10 +1286,8 @@ async def lightspeed_push_task(supplier_id: str, log_id: str):
             markup = float(settings.get('markup_percentage') or 40)
 
             ls = LightspeedService(
-                settings.get('lightspeed_api_key', ''),
-                settings.get('lightspeed_api_secret', ''),
-                settings.get('lightspeed_cluster', 'us1'),
-                settings.get('lightspeed_language', 'en')
+                settings.get('lightspeed_store_id', ''),
+                settings.get('lightspeed_secret_token', '')
             )
 
             conn_test = ls.test_connection()
