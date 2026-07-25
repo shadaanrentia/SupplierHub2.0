@@ -1,6 +1,6 @@
 """
 Lightspeed Retail (X-Series) API integration service.
-Uses the X-Series REST API v2.0 with Personal Token (Bearer auth).
+Supports both Personal Token and OAuth 2.0 (Private App) authentication.
 Base URL: https://{domain_prefix}.retail.lightspeed.app/api/2.0
 Docs: https://x-series-api.lightspeedhq.com/docs/introduction
 """
@@ -10,6 +10,7 @@ import base64
 import time
 import os
 import io
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +20,73 @@ API_VERSION = "2.0"
 class LightspeedService:
     """Lightspeed Retail (X-Series) integration via REST API v2.0."""
 
-    def __init__(self, domain_prefix: str = '', personal_token: str = ''):
+    def __init__(self, domain_prefix: str = '', personal_token: str = '',
+                 access_token: str = '', client_id: str = '', client_secret: str = '',
+                 refresh_token: str = '', token_expires_at=None):
         self.domain_prefix = (domain_prefix or '').strip()
         self.personal_token = (personal_token or '').strip()
-        self.mock_mode = not all([self.domain_prefix, self.personal_token])
+        self.access_token = (access_token or '').strip()
+        self.client_id = (client_id or '').strip()
+        self.client_secret = (client_secret or '').strip()
+        self.refresh_token = (refresh_token or '').strip()
+        self.token_expires_at = token_expires_at
+        self.token_was_refreshed = False
         self._last_request_time = 0
+
+        # Determine auth mode
+        has_oauth = bool(self.access_token and self.domain_prefix)
+        has_personal = bool(self.personal_token and self.domain_prefix)
+        self.mock_mode = not (has_oauth or has_personal)
 
         if self.mock_mode:
             logger.info("Lightspeed X-Series connector: MOCK mode (no credentials)")
+        elif has_oauth:
+            logger.info("Lightspeed X-Series connector: OAuth mode")
+            self._maybe_refresh_token()
+        else:
+            logger.info("Lightspeed X-Series connector: Personal Token mode")
+
+    def _maybe_refresh_token(self):
+        """Refresh the OAuth token if it's expired or about to expire."""
+        if not self.refresh_token or not self.client_id or not self.client_secret:
+            return
+        if self.token_expires_at is None:
+            return
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        # Refresh 5 minutes before expiry
+        if isinstance(self.token_expires_at, datetime):
+            expires = self.token_expires_at
+        else:
+            return
+
+        if now < (expires - timedelta(minutes=5)):
+            return
+
+        logger.info("Lightspeed access token expired or expiring soon, refreshing...")
+        try:
+            token_url = f"https://{self.domain_prefix}.retail.lightspeed.app/api/1.0/token"
+            resp = requests.post(token_url, data={
+                'grant_type': 'refresh_token',
+                'refresh_token': self.refresh_token,
+                'client_id': self.client_id,
+                'client_secret': self.client_secret,
+            }, timeout=30)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                self.access_token = data.get('access_token', '')
+                new_refresh = data.get('refresh_token', '')
+                if new_refresh:
+                    self.refresh_token = new_refresh
+                expires_in = int(data.get('expires_in', 86400))
+                self.token_expires_at = now + timedelta(seconds=expires_in)
+                self.token_was_refreshed = True
+                logger.info(f"Lightspeed token refreshed (expires in {expires_in}s)")
+            else:
+                logger.error(f"Token refresh failed ({resp.status_code}): {resp.text[:200]}")
+        except Exception as e:
+            logger.error(f"Token refresh error: {e}")
 
     def _base_url(self) -> str:
         return f"https://{self.domain_prefix}.retail.lightspeed.app/api/{API_VERSION}"
@@ -34,9 +94,13 @@ class LightspeedService:
     def _url(self, resource: str) -> str:
         return f"{self._base_url()}/{resource}"
 
+    def _active_token(self) -> str:
+        """Return the best available token (OAuth access_token > personal_token)."""
+        return self.access_token or self.personal_token
+
     def _headers(self) -> dict:
         return {
-            "Authorization": f"Bearer {self.personal_token}",
+            "Authorization": f"Bearer {self._active_token()}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
@@ -89,23 +153,32 @@ class LightspeedService:
     # ==================== CONNECTION ====================
     def test_connection(self) -> dict:
         if self.mock_mode:
+            # Check if OAuth credentials exist but no access token yet
+            if self.client_id and self.domain_prefix and not self.access_token:
+                return {
+                    'success': False,
+                    'connected': False,
+                    'message': 'OAuth credentials saved. Click "Connect to Lightspeed" to authorize.',
+                    'mock_mode': False,
+                    'needs_oauth': True,
+                }
             return {
                 'success': False,
                 'connected': False,
-                'message': 'Lightspeed not configured. Set Domain Prefix and Personal Token in Settings.',
+                'message': 'Lightspeed not configured. Set Domain Prefix and either Personal Token or OAuth credentials in Settings.',
                 'mock_mode': True
             }
         try:
-            # List products with page_size=1 as a lightweight connection test
             data = self._get("products", params={"page_size": 1})
-            # X-Series wraps results in a "data" array
             products = data.get('data', [])
+            auth_mode = "OAuth" if self.access_token else "Personal Token"
             return {
                 'success': True,
                 'connected': True,
-                'message': f'Connected to Lightspeed Retail ({self.domain_prefix}.retail.lightspeed.app). API responding.',
+                'message': f'Connected to Lightspeed Retail ({self.domain_prefix}.retail.lightspeed.app) via {auth_mode}.',
                 'mock_mode': False,
                 'domain_prefix': self.domain_prefix,
+                'auth_mode': auth_mode,
             }
         except requests.HTTPError as e:
             status = e.response.status_code if e.response is not None else 0
@@ -115,7 +188,10 @@ class LightspeedService:
             except Exception:
                 pass
             if status == 401:
-                msg = 'Authentication failed. Check your Personal Token.'
+                if self.access_token and self.refresh_token:
+                    msg = 'OAuth token expired or invalid. Try disconnecting and reconnecting.'
+                else:
+                    msg = 'Authentication failed. Check your Personal Token.'
             elif status == 403:
                 msg = 'Access forbidden. Your token may lack required scopes (products:read).'
             elif status == 404:
@@ -149,7 +225,6 @@ class LightspeedService:
                 if not items:
                     break
                 all_categories.extend(items)
-                # Pagination: use version number of last item as 'after'
                 version = data.get("version", {}).get("max")
                 if version and len(items) >= 200:
                     after = version
@@ -200,7 +275,6 @@ class LightspeedService:
 
             logger.info(f"Syncing product {sku} to Lightspeed: Cost={cost_price}, Sale={sale_price}")
 
-            # Check if product already exists by SKU
             existing_product_id = self._find_product_by_sku(sku)
 
             product_data = {
@@ -212,24 +286,20 @@ class LightspeedService:
                 'is_active': True,
             }
 
-            # Assign category
             category_id = product.get('category_id')
             if category_id:
                 product_data['product_type_id'] = str(category_id)
 
-            # Build variants payload
             variants = product.get('variants', [])
             if variants:
                 product_data['variants'] = self._build_variants_payload(variants, cost_price, sale_price)
 
             if existing_product_id:
-                # Update existing product
                 data = self._put(f"products/{existing_product_id}", product_data)
                 ls_product = data.get('data', data)
                 ls_id = ls_product.get('id', existing_product_id)
                 logger.info(f"Updated product {sku} (Lightspeed ID: {ls_id})")
             else:
-                # Create new product
                 data = self._post("products", product_data)
                 ls_product = data.get('data', data)
                 ls_id = ls_product.get('id')
@@ -238,7 +308,6 @@ class LightspeedService:
             if not ls_id:
                 return {'success': False, 'error': 'Failed to get product ID from Lightspeed'}
 
-            # Upload images
             images = product.get('images', [])
             if images:
                 self._upload_images(ls_id, images)
@@ -285,7 +354,6 @@ class LightspeedService:
                 'price_excluding_tax': v_price,
             }
 
-            # Build variant options (up to 3)
             options = []
             if color:
                 options.append({'name': 'Color', 'value': color})
@@ -294,7 +362,6 @@ class LightspeedService:
             if options:
                 variant_data['variant_options'] = options
 
-            # Inventory
             qty = int(v.get('inventory', 0) or v.get('inventory_quantity', 0) or 0)
             if qty > 0:
                 variant_data['inventory'] = [{'count': qty}]
@@ -337,7 +404,7 @@ class LightspeedService:
                         self._throttle()
                         url = self._url(f"products/{product_id}/actions/image_upload")
                         headers = {
-                            "Authorization": f"Bearer {self.personal_token}",
+                            "Authorization": f"Bearer {self._active_token()}",
                         }
                         files = {'image': (filename, io.BytesIO(image_bytes), 'image/jpeg')}
                         resp = requests.post(url, headers=headers, files=files, timeout=30)

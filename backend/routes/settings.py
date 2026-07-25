@@ -20,6 +20,10 @@ async def get_settings(user: dict = Depends(get_current_user)):
         s = row_to_dict(row)
         if s.get('odoo_api_key'): s['odoo_api_key'] = '***'
         if s.get('lightspeed_secret_token'): s['lightspeed_secret_token'] = '***'
+        if s.get('lightspeed_client_secret'): s['lightspeed_client_secret'] = '***'
+        if s.get('lightspeed_access_token'): s['lightspeed_access_token'] = '***'
+        if s.get('lightspeed_refresh_token'): s['lightspeed_refresh_token'] = '***'
+        s['lightspeed_oauth_connected'] = bool(s.get('lightspeed_access_token') and s.get('lightspeed_access_token') == '***')
         for old_field in ('lightspeed_api_key', 'lightspeed_api_secret', 'lightspeed_cluster', 'lightspeed_language'):
             s.pop(old_field, None)
         return s
@@ -31,7 +35,7 @@ async def update_settings(data: SettingsUpdate, user: dict = Depends(get_admin_u
         update_fields = []; values = []; param_idx = 1
         for field in ['sync_products_interval_hours', 'sync_inventory_interval_minutes', 'sync_pricing_interval_hours',
                       'auto_sync_enabled', 'odoo_url', 'odoo_db', 'odoo_username', 'preferred_warehouse', 'markup_percentage',
-                      'auto_push_to_odoo', 'lightspeed_store_id']:
+                      'auto_push_to_odoo', 'lightspeed_store_id', 'lightspeed_client_id']:
             val = getattr(data, field, None)
             if val is not None:
                 update_fields.append(f"{field} = ${param_idx}"); values.append(val); param_idx += 1
@@ -39,6 +43,8 @@ async def update_settings(data: SettingsUpdate, user: dict = Depends(get_admin_u
             update_fields.append(f"odoo_api_key = ${param_idx}"); values.append(data.odoo_api_key); param_idx += 1
         if data.lightspeed_secret_token and data.lightspeed_secret_token != '***':
             update_fields.append(f"lightspeed_secret_token = ${param_idx}"); values.append(data.lightspeed_secret_token); param_idx += 1
+        if data.lightspeed_client_secret and data.lightspeed_client_secret != '***':
+            update_fields.append(f"lightspeed_client_secret = ${param_idx}"); values.append(data.lightspeed_client_secret); param_idx += 1
         update_fields.append(f"updated_at = ${param_idx}"); values.append(utc_now()); param_idx += 1
         if update_fields:
             query = f"UPDATE settings SET {', '.join(update_fields)} WHERE id = 'system_settings'"

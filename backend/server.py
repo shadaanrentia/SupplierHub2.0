@@ -186,6 +186,11 @@ async def startup():
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS lightspeed_sync_status VARCHAR(50) DEFAULT 'pending'",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS lightspeed_product_id VARCHAR(100)",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS selected_for_lightspeed BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_client_id VARCHAR(200) DEFAULT ''",
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_client_secret VARCHAR(500) DEFAULT ''",
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_access_token TEXT DEFAULT ''",
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_refresh_token TEXT DEFAULT ''",
+            "ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_token_expires_at TIMESTAMP",
         ]:
             await conn.execute(alt)
 

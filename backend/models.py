@@ -87,3 +87,5 @@ class SettingsUpdate(BaseModel):
     auto_push_to_odoo: Optional[bool] = None
     lightspeed_store_id: Optional[str] = None
     lightspeed_secret_token: Optional[str] = None
+    lightspeed_client_id: Optional[str] = None
+    lightspeed_client_secret: Optional[str] = None
