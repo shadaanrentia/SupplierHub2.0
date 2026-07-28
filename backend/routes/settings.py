@@ -18,12 +18,13 @@ async def get_settings(user: dict = Depends(get_current_user)):
                 "sync_pricing_interval_hours": 12, "auto_sync_enabled": False, "preferred_warehouse": "MISSISSAUGA/ON"
             }
         s = row_to_dict(row)
+        has_access_token = bool(s.get('lightspeed_access_token'))
         if s.get('odoo_api_key'): s['odoo_api_key'] = '***'
         if s.get('lightspeed_secret_token'): s['lightspeed_secret_token'] = '***'
         if s.get('lightspeed_client_secret'): s['lightspeed_client_secret'] = '***'
         if s.get('lightspeed_access_token'): s['lightspeed_access_token'] = '***'
         if s.get('lightspeed_refresh_token'): s['lightspeed_refresh_token'] = '***'
-        s['lightspeed_oauth_connected'] = bool(s.get('lightspeed_access_token') and s.get('lightspeed_access_token') == '***')
+        s['lightspeed_oauth_connected'] = has_access_token
         for old_field in ('lightspeed_api_key', 'lightspeed_api_secret', 'lightspeed_cluster', 'lightspeed_language'):
             s.pop(old_field, None)
         return s
