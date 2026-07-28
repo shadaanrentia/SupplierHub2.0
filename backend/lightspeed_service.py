@@ -1,8 +1,8 @@
 """
 Lightspeed Retail (X-Series) API integration service.
 Supports both Personal Token and OAuth 2.0 (Private App) authentication.
-Base URL: https://{domain_prefix}.retail.lightspeed.app/api/2.0
-Docs: https://x-series-api.lightspeedhq.com/docs/introduction
+Base URL: https://{domain_prefix}.retail.lightspeed.app/api/{version}
+API Version: Date-based (2026-01). Docs: https://x-series-api.lightspeedhq.com/docs/introduction
 """
 import logging
 import requests
@@ -14,11 +14,11 @@ from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
-API_VERSION = "2.0"
+API_VERSION = "2026-01"
 
 
 class LightspeedService:
-    """Lightspeed Retail (X-Series) integration via REST API v2.0."""
+    """Lightspeed Retail (X-Series) integration via REST API (date-based versioning)."""
 
     def __init__(self, domain_prefix: str = '', personal_token: str = '',
                  access_token: str = '', client_id: str = '', client_secret: str = '',
@@ -32,8 +32,8 @@ class LightspeedService:
         self.token_expires_at = token_expires_at
         self.token_was_refreshed = False
         self._last_request_time = 0
+        self._variant_attr_cache = {}  # {"Color": "attr-id-123", "Size": "attr-id-456"}
 
-        # Determine auth mode
         has_oauth = bool(self.access_token and self.domain_prefix)
         has_personal = bool(self.personal_token and self.domain_prefix)
         self.mock_mode = not (has_oauth or has_personal)
@@ -52,17 +52,13 @@ class LightspeedService:
             return
         if self.token_expires_at is None:
             return
-
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        # Refresh 5 minutes before expiry
         if isinstance(self.token_expires_at, datetime):
             expires = self.token_expires_at
         else:
             return
-
         if now < (expires - timedelta(minutes=5)):
             return
-
         logger.info("Lightspeed access token expired or expiring soon, refreshing...")
         try:
             token_url = f"https://{self.domain_prefix}.retail.lightspeed.app/api/1.0/token"
@@ -72,7 +68,6 @@ class LightspeedService:
                 'client_id': self.client_id,
                 'client_secret': self.client_secret,
             }, timeout=30)
-
             if resp.status_code == 200:
                 data = resp.json()
                 self.access_token = data.get('access_token', '')
@@ -95,7 +90,6 @@ class LightspeedService:
         return f"{self._base_url()}/{resource}"
 
     def _active_token(self) -> str:
-        """Return the best available token (OAuth access_token > personal_token)."""
         return self.access_token or self.personal_token
 
     def _headers(self) -> dict:
@@ -106,14 +100,12 @@ class LightspeedService:
         }
 
     def _throttle(self):
-        """Rate limiting: X-Series allows ~600 req/min for personal tokens."""
         elapsed = time.time() - self._last_request_time
         if elapsed < 0.12:
             time.sleep(0.12 - elapsed)
         self._last_request_time = time.time()
 
     def _handle_rate_limit(self, resp):
-        """Check rate-limit headers and back off if needed."""
         remaining = resp.headers.get('X-RateLimit-Remaining')
         if remaining is not None and int(remaining) < 10:
             reset_at = resp.headers.get('X-RateLimit-Reset')
@@ -153,32 +145,24 @@ class LightspeedService:
     # ==================== CONNECTION ====================
     def test_connection(self) -> dict:
         if self.mock_mode:
-            # Check if OAuth credentials exist but no access token yet
             if self.client_id and self.domain_prefix and not self.access_token:
                 return {
-                    'success': False,
-                    'connected': False,
+                    'success': False, 'connected': False,
                     'message': 'OAuth credentials saved. Click "Connect to Lightspeed" to authorize.',
-                    'mock_mode': False,
-                    'needs_oauth': True,
+                    'mock_mode': False, 'needs_oauth': True,
                 }
             return {
-                'success': False,
-                'connected': False,
-                'message': 'Lightspeed not configured. Set Domain Prefix and either Personal Token or OAuth credentials in Settings.',
+                'success': False, 'connected': False,
+                'message': 'Lightspeed not configured. Set Domain Prefix and credentials in Settings.',
                 'mock_mode': True
             }
         try:
             data = self._get("products", params={"page_size": 1})
-            products = data.get('data', [])
             auth_mode = "OAuth" if self.access_token else "Personal Token"
             return {
-                'success': True,
-                'connected': True,
-                'message': f'Connected to Lightspeed Retail ({self.domain_prefix}.retail.lightspeed.app) via {auth_mode}.',
-                'mock_mode': False,
-                'domain_prefix': self.domain_prefix,
-                'auth_mode': auth_mode,
+                'success': True, 'connected': True,
+                'message': f'Connected to Lightspeed Retail ({self.domain_prefix}) via {auth_mode}. API version {API_VERSION}.',
+                'mock_mode': False, 'domain_prefix': self.domain_prefix, 'auth_mode': auth_mode,
             }
         except requests.HTTPError as e:
             status = e.response.status_code if e.response is not None else 0
@@ -193,7 +177,7 @@ class LightspeedService:
                 else:
                     msg = 'Authentication failed. Check your Personal Token.'
             elif status == 403:
-                msg = 'Access forbidden. Your token may lack required scopes (products:read).'
+                msg = 'Access forbidden. Your token may lack required scopes.'
             elif status == 404:
                 msg = f'Store not found. Verify your Domain Prefix ({self.domain_prefix}).'
             else:
@@ -208,9 +192,39 @@ class LightspeedService:
         except Exception as e:
             return {'success': False, 'connected': False, 'message': f'Connection failed: {str(e)}', 'mock_mode': False}
 
+    # ==================== VARIANT ATTRIBUTES ====================
+    def _ensure_variant_attributes(self, needed: list) -> dict:
+        """Ensure variant attributes (e.g., 'Color', 'Size') exist. Returns {name: id} mapping."""
+        if not needed:
+            return {}
+        # Fetch existing attributes
+        if not self._variant_attr_cache:
+            try:
+                data = self._get("variant_attributes", params={"page_size": 200})
+                for attr in data.get('data', []):
+                    self._variant_attr_cache[attr['name']] = attr['id']
+            except Exception as e:
+                logger.warning(f"Failed to fetch variant attributes: {e}")
+
+        result = {}
+        for name in needed:
+            if name in self._variant_attr_cache:
+                result[name] = self._variant_attr_cache[name]
+            else:
+                try:
+                    resp = self._post("variant_attributes", {"name": name})
+                    attr = resp.get('data', resp)
+                    attr_id = attr.get('id')
+                    if attr_id:
+                        self._variant_attr_cache[name] = attr_id
+                        result[name] = attr_id
+                        logger.info(f"Created variant attribute '{name}' -> {attr_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to create variant attribute '{name}': {e}")
+        return result
+
     # ==================== CATEGORIES ====================
     def get_categories(self) -> dict:
-        """Fetch all product categories from Lightspeed store."""
         if self.mock_mode:
             return {'success': False, 'error': 'Lightspeed not configured', 'categories': []}
         try:
@@ -230,7 +244,6 @@ class LightspeedService:
                     after = version
                 else:
                     break
-
             result = []
             for cat in all_categories:
                 result.append({
@@ -240,16 +253,13 @@ class LightspeedService:
                     'parent_category': None,
                     'is_visible': not cat.get('deleted_at'),
                 })
-
             logger.info(f"Fetched {len(result)} categories from Lightspeed")
             return {'success': True, 'categories': result}
-
         except Exception as e:
             logger.error(f"Error fetching Lightspeed categories: {e}")
             return {'success': False, 'error': str(e), 'categories': []}
 
     def create_category(self, name: str) -> dict:
-        """Create a product category in Lightspeed."""
         if self.mock_mode:
             return {'success': False, 'error': 'Lightspeed not configured'}
         try:
@@ -272,42 +282,40 @@ class LightspeedService:
             sku = product.get('supplier_sku', '')
             cost_price = float(product.get('cost_price', 0) or 0)
             sale_price = float(product.get('base_price', 0) or 0)
+            variants = product.get('variants', [])
 
-            logger.info(f"Syncing product {sku} to Lightspeed: Cost={cost_price}, Sale={sale_price}")
+            logger.info(f"Syncing product {sku} to Lightspeed: Cost={cost_price}, Sale={sale_price}, Variants={len(variants)}")
 
             existing_product_id = self._find_product_by_sku(sku)
 
-            product_data = {
-                'name': product.get('product_name', ''),
-                'description': product.get('description', '') or '',
-                'sku': sku,
-                'supply_price': cost_price,
-                'price_excluding_tax': sale_price,
-                'is_active': True,
-            }
-
-            category_id = product.get('category_id')
-            if category_id:
-                product_data['product_type_id'] = str(category_id)
-
-            variants = product.get('variants', [])
-            if variants:
-                product_data['variants'] = self._build_variants_payload(variants, cost_price, sale_price)
-
             if existing_product_id:
-                data = self._put(f"products/{existing_product_id}", product_data)
+                # Update existing product
+                update_data = {
+                    'name': product.get('product_name', ''),
+                    'description': product.get('description', '') or '',
+                    'supply_price': cost_price,
+                    'price_excluding_tax': sale_price,
+                    'is_active': True,
+                }
+                category_id = product.get('category_id')
+                if category_id:
+                    update_data['product_type_id'] = str(category_id)
+
+                data = self._put(f"products/{existing_product_id}", update_data)
                 ls_product = data.get('data', data)
                 ls_id = ls_product.get('id', existing_product_id)
                 logger.info(f"Updated product {sku} (Lightspeed ID: {ls_id})")
             else:
-                data = self._post("products", product_data)
-                ls_product = data.get('data', data)
-                ls_id = ls_product.get('id')
-                logger.info(f"Created product {sku} (Lightspeed ID: {ls_id})")
+                # Create new product
+                if variants and len(variants) > 1:
+                    ls_id = self._create_variant_product(product, variants, cost_price, sale_price)
+                else:
+                    ls_id = self._create_simple_product(product, cost_price, sale_price)
 
             if not ls_id:
                 return {'success': False, 'error': 'Failed to get product ID from Lightspeed'}
 
+            # Upload images
             images = product.get('images', [])
             if images:
                 self._upload_images(ls_id, images)
@@ -327,6 +335,118 @@ class LightspeedService:
             logger.error(f"Lightspeed push error: {e}")
             return {'success': False, 'error': str(e)}
 
+    def _create_simple_product(self, product: dict, cost_price: float, sale_price: float) -> str:
+        """Create a simple product (no variants or single variant)."""
+        product_data = {
+            'name': product.get('product_name', ''),
+            'description': product.get('description', '') or '',
+            'sku': product.get('supplier_sku', ''),
+            'supply_price': cost_price,
+            'price_excluding_tax': sale_price,
+            'is_active': True,
+        }
+        category_id = product.get('category_id')
+        if category_id:
+            product_data['product_type_id'] = str(category_id)
+
+        data = self._post("products", product_data)
+        ls_product = data.get('data', data)
+        ls_id = ls_product.get('id') if isinstance(ls_product, dict) else None
+        # If response is a list (variant creation returns list of IDs), take first
+        if isinstance(ls_product, list) and ls_product:
+            ls_id = ls_product[0]
+        logger.info(f"Created simple product '{product.get('product_name')}' (Lightspeed ID: {ls_id})")
+        return ls_id
+
+    def _create_variant_product(self, product: dict, variants: list, cost_price: float, sale_price: float) -> str:
+        """Create a product with multiple variants using variant_definitions."""
+        # Determine which variant attributes are needed
+        attr_names = set()
+        for v in variants:
+            if v.get('color'):
+                attr_names.add('Color')
+            if v.get('size'):
+                attr_names.add('Size')
+        if not attr_names:
+            # No variant attributes found, create as simple product
+            return self._create_simple_product(product, cost_price, sale_price)
+
+        # Ensure variant attributes exist
+        attr_map = self._ensure_variant_attributes(list(attr_names))
+        if not attr_map:
+            logger.warning("Could not create variant attributes, falling back to simple product")
+            return self._create_simple_product(product, cost_price, sale_price)
+
+        # Build variant definitions
+        variant_list = []
+        for v in variants:
+            definitions = []
+            color = v.get('color', '')
+            size = v.get('size', '')
+            if color and 'Color' in attr_map:
+                definitions.append({'attribute_id': attr_map['Color'], 'value': color})
+            if size and 'Size' in attr_map:
+                definitions.append({'attribute_id': attr_map['Size'], 'value': size})
+            if definitions:
+                variant_list.append({'variant_definitions': definitions})
+
+        if not variant_list:
+            return self._create_simple_product(product, cost_price, sale_price)
+
+        product_data = {
+            'name': product.get('product_name', ''),
+            'description': product.get('description', '') or '',
+            'supply_price': cost_price,
+            'price_excluding_tax': sale_price,
+            'is_active': True,
+            'variants': variant_list,
+        }
+        category_id = product.get('category_id')
+        if category_id:
+            product_data['product_type_id'] = str(category_id)
+
+        data = self._post("products", product_data)
+        ls_result = data.get('data', data)
+
+        # Response for variant creation is a list of IDs
+        if isinstance(ls_result, list):
+            parent_id = ls_result[0] if ls_result else None
+            logger.info(f"Created variant product '{product.get('product_name')}' with {len(ls_result)} variants (parent: {parent_id})")
+
+            # Update individual variants with SKU and pricing
+            self._update_variant_details(ls_result, variants, cost_price, sale_price)
+            return parent_id
+        elif isinstance(ls_result, dict):
+            ls_id = ls_result.get('id')
+            logger.info(f"Created product '{product.get('product_name')}' (Lightspeed ID: {ls_id})")
+            return ls_id
+
+        return None
+
+    def _update_variant_details(self, variant_ids: list, variants: list, default_cost: float, default_sale: float):
+        """Update individual variant products with SKU and pricing after creation."""
+        for i, vid in enumerate(variant_ids):
+            if i >= len(variants):
+                break
+            v = variants[i]
+            v_sku = v.get('variant_sku', '') or v.get('sku', '')
+            v_price = float(v.get('price', 0) or default_sale)
+            v_cost = float(v.get('cost_price', 0) or default_cost)
+
+            update_data = {}
+            if v_sku:
+                update_data['sku'] = v_sku
+            if v_cost > 0:
+                update_data['supply_price'] = v_cost
+            if v_price > 0:
+                update_data['price_excluding_tax'] = v_price
+
+            if update_data:
+                try:
+                    self._put(f"products/{vid}", update_data)
+                except Exception as e:
+                    logger.warning(f"Failed to update variant {vid} details: {e}")
+
     def _find_product_by_sku(self, sku: str):
         """Find a product ID by SKU lookup."""
         try:
@@ -337,37 +457,6 @@ class LightspeedService:
         except Exception:
             pass
         return None
-
-    def _build_variants_payload(self, variants: list, cost_price: float, sale_price: float) -> list:
-        """Build variant objects for Lightspeed X-Series product creation/update."""
-        result = []
-        for v in variants:
-            v_sku = v.get('variant_sku', '') or v.get('sku', '')
-            v_price = float(v.get('price', 0) or sale_price)
-            v_cost = float(v.get('cost_price', 0) or cost_price)
-            color = v.get('color', '')
-            size = v.get('size', '')
-
-            variant_data = {
-                'sku': v_sku,
-                'supply_price': v_cost,
-                'price_excluding_tax': v_price,
-            }
-
-            options = []
-            if color:
-                options.append({'name': 'Color', 'value': color})
-            if size:
-                options.append({'name': 'Size', 'value': size})
-            if options:
-                variant_data['variant_options'] = options
-
-            qty = int(v.get('inventory', 0) or v.get('inventory_quantity', 0) or 0)
-            if qty > 0:
-                variant_data['inventory'] = [{'count': qty}]
-
-            result.append(variant_data)
-        return result
 
     def _upload_images(self, product_id: str, images: list):
         """Upload product images via the image_upload action endpoint."""
@@ -403,9 +492,7 @@ class LightspeedService:
                     try:
                         self._throttle()
                         url = self._url(f"products/{product_id}/actions/image_upload")
-                        headers = {
-                            "Authorization": f"Bearer {self._active_token()}",
-                        }
+                        headers = {"Authorization": f"Bearer {self._active_token()}"}
                         files = {'image': (filename, io.BytesIO(image_bytes), 'image/jpeg')}
                         resp = requests.post(url, headers=headers, files=files, timeout=30)
                         self._handle_rate_limit(resp)
@@ -422,7 +509,6 @@ class LightspeedService:
 
     # ==================== INVENTORY ====================
     def update_product_inventory(self, product_id: str, outlet_id: str, count: int):
-        """Update inventory for a product at a specific outlet."""
         if self.mock_mode:
             return {'success': False, 'error': 'Not configured'}
         try:
