@@ -18,6 +18,7 @@ async def get_preprocessing_products(page: int = 1, limit: int = 50, status: str
         where_clause = f"WHERE p.preprocessing_status = '{status}'" if status else ""
         query = f'''
             SELECT p.*, s.supplier_name, cm.odoo_category_id as mapped_odoo_category_id,
+                cm.lightspeed_category_id as mapped_lightspeed_category_id,
                 oc.category_name as odoo_category_name,
                 (SELECT COUNT(*) FROM product_variants pv WHERE pv.product_id = p.id) as variants_count,
                 (SELECT COUNT(*) FROM product_media pm WHERE pm.product_id = p.id) as images_count,
@@ -40,7 +41,8 @@ async def get_preprocessing_products(page: int = 1, limit: int = 50, status: str
             product['cost_price'] = cost_price
             product['markup_percentage'] = markup
             errors = []
-            if not product.get('mapped_odoo_category_id'): errors.append("Missing category mapping")
+            has_category_mapping = product.get('mapped_odoo_category_id') or product.get('mapped_lightspeed_category_id')
+            if not has_category_mapping: errors.append("Missing category mapping")
             if not product.get('images_count') or product['images_count'] == 0: errors.append("No images")
             if cost_price <= 0: errors.append("Invalid price")
             product['validation_errors'] = errors
@@ -55,14 +57,14 @@ async def get_preprocessing_summary(user: dict = Depends(get_current_user)):
     async with deps.pool.acquire() as conn:
         total_products = await conn.fetchval("SELECT COUNT(*) FROM products")
         total_variants = await conn.fetchval("SELECT COUNT(*) FROM product_variants")
-        mapped_count = await conn.fetchval('SELECT COUNT(DISTINCT p.id) FROM products p INNER JOIN category_mapping cm ON p.category = cm.supplier_category_name WHERE cm.odoo_category_id IS NOT NULL')
-        unmapped_count = await conn.fetchval('SELECT COUNT(*) FROM products p LEFT JOIN category_mapping cm ON p.category = cm.supplier_category_name WHERE cm.odoo_category_id IS NULL OR p.category IS NULL OR p.category = \'\'')
+        mapped_count = await conn.fetchval('SELECT COUNT(DISTINCT p.id) FROM products p INNER JOIN category_mapping cm ON p.category = cm.supplier_category_name WHERE cm.odoo_category_id IS NOT NULL OR cm.lightspeed_category_id IS NOT NULL')
+        unmapped_count = await conn.fetchval('SELECT COUNT(*) FROM products p LEFT JOIN category_mapping cm ON p.category = cm.supplier_category_name WHERE (cm.odoo_category_id IS NULL AND cm.lightspeed_category_id IS NULL) OR p.category IS NULL OR p.category = \'\'')
         with_images = await conn.fetchval('SELECT COUNT(DISTINCT product_id) FROM product_media')
         with_price = await conn.fetchval("SELECT COUNT(*) FROM products WHERE base_price > 0")
         synced = await conn.fetchval("SELECT COUNT(*) FROM products WHERE odoo_sync_status = 'synced'")
         pending = await conn.fetchval("SELECT COUNT(*) FROM products WHERE odoo_sync_status = 'pending' OR odoo_sync_status IS NULL")
         failed = await conn.fetchval("SELECT COUNT(*) FROM products WHERE odoo_sync_status = 'failed'")
-        ready_for_sync = await conn.fetchval('SELECT COUNT(DISTINCT p.id) FROM products p INNER JOIN category_mapping cm ON p.category = cm.supplier_category_name WHERE cm.odoo_category_id IS NOT NULL AND p.base_price > 0 AND p.odoo_sync_status != \'synced\'')
+        ready_for_sync = await conn.fetchval("SELECT COUNT(DISTINCT p.id) FROM products p INNER JOIN category_mapping cm ON p.category = cm.supplier_category_name WHERE (cm.odoo_category_id IS NOT NULL OR cm.lightspeed_category_id IS NOT NULL) AND p.base_price > 0 AND p.odoo_sync_status != 'synced'")
         return {
             "total_products": total_products, "total_variants": total_variants,
             "category_mapping": {"mapped": mapped_count, "unmapped": unmapped_count},
@@ -97,7 +99,7 @@ async def validate_products_for_sync(data: dict = None, user: dict = Depends(get
         validated = 0; invalid = 0
         for p in products:
             product = row_to_dict(p); errors = []
-            mapping = await conn.fetchrow('SELECT cm.odoo_category_id FROM category_mapping cm WHERE cm.supplier_category_name = $1 AND cm.odoo_category_id IS NOT NULL', product.get('category', ''))
+            mapping = await conn.fetchrow('SELECT cm.odoo_category_id, cm.lightspeed_category_id FROM category_mapping cm WHERE cm.supplier_category_name = $1 AND (cm.odoo_category_id IS NOT NULL OR cm.lightspeed_category_id IS NOT NULL)', product.get('category', ''))
             if not mapping: errors.append("Missing category mapping")
             cost = float(product.get('base_price') or 0)
             if cost <= 0: errors.append("Invalid or missing price")

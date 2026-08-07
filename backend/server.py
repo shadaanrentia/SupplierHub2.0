@@ -228,7 +228,7 @@ async def startup():
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS auto_push_to_odoo BOOLEAN DEFAULT FALSE",
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_store_id VARCHAR(100) DEFAULT ''",
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_secret_token VARCHAR(500) DEFAULT ''",
-            "ALTER TABLE category_mapping ADD COLUMN IF NOT EXISTS lightspeed_category_id INTEGER",
+            "ALTER TABLE category_mapping ADD COLUMN IF NOT EXISTS lightspeed_category_id TEXT",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS lightspeed_sync_status VARCHAR(50) DEFAULT 'pending'",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS lightspeed_product_id VARCHAR(100)",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS selected_for_lightspeed BOOLEAN DEFAULT FALSE",
@@ -239,6 +239,18 @@ async def startup():
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_token_expires_at TIMESTAMP",
         ]:
             await conn.execute(alt)
+
+        # Migration: change lightspeed_category_id from INTEGER to TEXT if needed
+        try:
+            col_type = await conn.fetchval("""
+                SELECT data_type FROM information_schema.columns
+                WHERE table_name = 'category_mapping' AND column_name = 'lightspeed_category_id'
+            """)
+            if col_type and col_type != 'text':
+                await conn.execute("ALTER TABLE category_mapping ALTER COLUMN lightspeed_category_id TYPE TEXT USING lightspeed_category_id::TEXT")
+                logger.info("Migrated lightspeed_category_id from INTEGER to TEXT")
+        except Exception as e:
+            logger.warning(f"lightspeed_category_id migration check: {e}")
 
         # Default admin user
         admin = await conn.fetchrow("SELECT id FROM users WHERE username = 'admin'")

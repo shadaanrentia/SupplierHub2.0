@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import axios from "../lib/axios";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { RefreshCw, FolderTree, ArrowRight, Check, X, Zap } from "lucide-react";
+import { RefreshCw, FolderTree, ArrowRight, Check, X, Zap, ChevronRight } from "lucide-react";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
 
@@ -45,6 +45,34 @@ export default function CategoryMapping() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Build hierarchical Lightspeed categories (Level 1 -> Level 2)
+  const lsHierarchy = useMemo(() => {
+    if (!lightspeedCategories.length) return [];
+    const roots = lightspeedCategories.filter(c => !c.parent_id);
+    const children = lightspeedCategories.filter(c => c.parent_id);
+    const childMap = {};
+    children.forEach(c => {
+      if (!childMap[c.parent_id]) childMap[c.parent_id] = [];
+      childMap[c.parent_id].push(c);
+    });
+    // Build flat list with level info for display
+    const result = [];
+    roots.sort((a, b) => a.category_name.localeCompare(b.category_name));
+    roots.forEach(root => {
+      result.push({ ...root, level: 1 });
+      const kids = (childMap[root.lightspeed_category_id] || []).sort((a, b) => a.category_name.localeCompare(b.category_name));
+      kids.forEach(child => {
+        result.push({ ...child, level: 2 });
+      });
+    });
+    return result;
+  }, [lightspeedCategories]);
+
+  // Flat list of leaf categories for mapping dropdown
+  const lsLeafCategories = useMemo(() => {
+    return lightspeedCategories.filter(c => c.leaf_category);
+  }, [lightspeedCategories]);
 
   const syncCategories = async () => {
     setSyncing(true);
@@ -118,10 +146,11 @@ export default function CategoryMapping() {
       if (platform === "odoo") {
         body.odoo_category_id = value === "none" ? null : parseInt(value);
       } else {
-        body.lightspeed_category_id = value === "none" ? null : parseInt(value);
+        // Lightspeed IDs are UUID strings, not integers
+        body.lightspeed_category_id = value === "none" ? null : value;
       }
       await axios.post(`${API}/category-mappings`, body);
-      toast.success(`Mapped "${supplierCategory}" to ${platform === "odoo" ? "Odoo" : "Lightspeed"} category`);
+      toast.success(`Mapped "${supplierCategory}"`);
       fetchData();
     } catch (e) {
       toast.error("Failed to save mapping");
@@ -135,17 +164,16 @@ export default function CategoryMapping() {
     if (platform === "odoo") {
       return mapping?.odoo_category_id?.toString() || "none";
     } else {
-      return mapping?.lightspeed_category_id?.toString() || "none";
+      return mapping?.lightspeed_category_id || "none";
     }
   };
 
   const platformLabel = platform === "odoo" ? "Odoo" : "Lightspeed";
-  const platformColor = platform === "odoo" ? "blue" : "emerald";
 
-  // Categories from the selected platform for the mapping dropdown
+  // Categories for the mapping dropdown
   const targetCategories = platform === "odoo"
     ? odooCategories.filter(c => selectedCategories.has(c.id))
-    : lightspeedCategories;
+    : lsLeafCategories;
 
   const mappedCount = mappings.filter(m =>
     platform === "odoo" ? m.odoo_category_id : m.lightspeed_category_id
@@ -205,7 +233,6 @@ export default function CategoryMapping() {
         </CardHeader>
         <CardContent>
           {platform === "odoo" ? (
-            // Odoo categories with checkboxes
             odooCategories.length > 0 ? (
               <>
                 <div className="flex gap-2 mb-4">
@@ -224,7 +251,6 @@ export default function CategoryMapping() {
                     <thead>
                       <tr className="border-b border-zinc-800 text-zinc-400">
                         <th className="text-left py-2 px-3 w-12">Select</th>
-                        <th className="text-left py-2 px-3">Category ID</th>
                         <th className="text-left py-2 px-3">Category Name</th>
                         <th className="text-left py-2 px-3">Parent</th>
                       </tr>
@@ -239,7 +265,6 @@ export default function CategoryMapping() {
                               data-testid={`category-checkbox-${cat.odoo_category_id}`}
                             />
                           </td>
-                          <td className="py-2 px-3 font-mono text-zinc-400">{cat.odoo_category_id}</td>
                           <td className="py-2 px-3 text-zinc-100">{cat.category_name}</td>
                           <td className="py-2 px-3 text-zinc-500">{cat.parent_category || "—"}</td>
                         </tr>
@@ -256,23 +281,41 @@ export default function CategoryMapping() {
               </div>
             )
           ) : (
-            // Lightspeed categories (flat list, no checkboxes needed)
-            lightspeedCategories.length > 0 ? (
+            // Lightspeed categories — hierarchical (Level 1 / Level 2)
+            lsHierarchy.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-zinc-800 text-zinc-400">
-                      <th className="text-left py-2 px-3">Category ID</th>
                       <th className="text-left py-2 px-3">Category Name</th>
-                      <th className="text-left py-2 px-3">Visible</th>
+                      <th className="text-left py-2 px-3 w-24">Level</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {lightspeedCategories.map((cat) => (
-                      <tr key={cat.lightspeed_category_id} className="border-b border-zinc-800/50 hover:bg-zinc-800/30" data-testid={`ls-category-row-${cat.lightspeed_category_id}`}>
-                        <td className="py-2 px-3 font-mono text-zinc-400">{cat.lightspeed_category_id}</td>
-                        <td className="py-2 px-3 text-zinc-100">{cat.category_name}</td>
-                        <td className="py-2 px-3">{cat.is_visible ? <Check className="w-4 h-4 text-green-400" /> : <X className="w-4 h-4 text-zinc-600" />}</td>
+                    {lsHierarchy.map((cat) => (
+                      <tr
+                        key={cat.lightspeed_category_id}
+                        className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${cat.level === 1 ? 'bg-zinc-800/20' : ''}`}
+                        data-testid={`ls-category-row-${cat.lightspeed_category_id}`}
+                      >
+                        <td className="py-2 px-3">
+                          {cat.level === 1 ? (
+                            <span className="text-zinc-100 font-medium flex items-center gap-1.5">
+                              <FolderTree className="w-3.5 h-3.5 text-emerald-400" />
+                              {cat.category_name}
+                            </span>
+                          ) : (
+                            <span className="text-zinc-300 flex items-center gap-1.5 pl-6">
+                              <ChevronRight className="w-3 h-3 text-zinc-600" />
+                              {cat.category_name}
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2 px-3">
+                          <span className={`text-xs px-2 py-0.5 rounded-none font-mono ${cat.level === 1 ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800' : 'bg-zinc-800 text-zinc-400 border border-zinc-700'}`}>
+                            L{cat.level}
+                          </span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -324,10 +367,10 @@ export default function CategoryMapping() {
                             onValueChange={(value) => updateMapping(supplierCat, value)}
                             disabled={savingMapping[supplierCat]}
                           >
-                            <SelectTrigger className="w-full bg-zinc-800 border-zinc-700">
+                            <SelectTrigger className="w-full bg-zinc-800 border-zinc-700" data-testid={`mapping-select-${supplierCat}`}>
                               <SelectValue placeholder={`Select ${platformLabel} category`} />
                             </SelectTrigger>
-                            <SelectContent className="bg-zinc-900 border-zinc-800">
+                            <SelectContent className="bg-zinc-900 border-zinc-800 max-h-72">
                               <SelectItem value="none">— Not Mapped —</SelectItem>
                               {platform === "odoo" ? (
                                 targetCategories.map((c) => (
@@ -337,8 +380,10 @@ export default function CategoryMapping() {
                                 ))
                               ) : (
                                 targetCategories.map((c) => (
-                                  <SelectItem key={c.lightspeed_category_id} value={c.lightspeed_category_id.toString()}>
-                                    {c.category_name}
+                                  <SelectItem key={c.lightspeed_category_id} value={c.lightspeed_category_id}>
+                                    {(c.category_path && c.category_path.length > 1)
+                                      ? `${c.category_path[0].name} > ${c.category_name}`
+                                      : c.category_name}
                                   </SelectItem>
                                 ))
                               )}
@@ -386,7 +431,7 @@ export default function CategoryMapping() {
               </div>
               <div className="bg-zinc-800/50 rounded-lg p-4 text-center">
                 <p className="text-2xl font-bold text-green-400">
-                  {platform === "odoo" ? selectedCategories.size : lightspeedCategories.length}
+                  {platform === "odoo" ? selectedCategories.size : lsLeafCategories.length}
                 </p>
                 <p className="text-sm text-zinc-500">Available for Mapping</p>
               </div>
