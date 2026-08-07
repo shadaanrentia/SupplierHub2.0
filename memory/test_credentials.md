@@ -19,10 +19,11 @@
 - Username: `talk2shadaan@gmail.com`
 - API Key: `5e15b2949864642da048a991cc19a57b80236be7`
 
-## Lightspeed Retail (X-Series) — OAuth 2.0
+## Lightspeed Retail (X-Series)
 - Domain Prefix: `redleafssports`
+- Personal Token: `lsxs_pt_tiodrkFVK9qKD4xGeWj6TaY5RtUoMRHT`
 - Client ID (Public Key): `public_ycmUEk1yjqgUZYzeGFCwGNxVmMDe9Wgw`
 - Client Secret (Secret Key): `secret_7LFgEv69Z2ZUmRxaKNduSeMUmQVzkw1e`
-- Auth Mode: OAuth 2.0 (Private App) — requires redirect-based authorization
+- API Version: 2026-07
 - OAuth Callback URL: `https://product-bridge-23.preview.emergentagent.com/api/lightspeed/oauth/callback`
-- Status: Credentials saved, awaiting user authorization via "Connect to Lightspeed" button
+- Status: Connected via Personal Token (working). OAuth flow also available.

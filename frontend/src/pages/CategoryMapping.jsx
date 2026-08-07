@@ -169,7 +169,7 @@ export default function CategoryMapping() {
             </SelectTrigger>
             <SelectContent className="bg-zinc-900 border-zinc-800">
               <SelectItem value="odoo">Odoo ERP</SelectItem>
-              <SelectItem value="lightspeed">Lightspeed eCom</SelectItem>
+              <SelectItem value="lightspeed">Lightspeed Retail (X-Series)</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -200,7 +200,7 @@ export default function CategoryMapping() {
           <p className="text-sm text-zinc-500 mt-2">
             {platform === "odoo"
               ? "Fetch categories from Odoo and select which ones to use for product mapping."
-              : "Fetch categories from Lightspeed eCom store to use for product mapping."}
+              : "Fetch categories from Lightspeed Retail store to use for product mapping."}
           </p>
         </CardHeader>
         <CardContent>
