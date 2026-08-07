@@ -28,33 +28,79 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_postgresql():
-    """Auto-start PostgreSQL if it's not running."""
+    """Auto-start PostgreSQL if it's not running. Handles cluster recreation."""
+    pg_running = False
+
     for attempt in range(3):
+        # Check if already running
         try:
             result = subprocess.run(["pg_isready", "-h", "localhost"], capture_output=True, timeout=5)
             if result.returncode == 0:
-                return True
-        except FileNotFoundError:
-            # pg_isready not installed, try installing and starting
-            subprocess.run(["apt-get", "install", "-y", "-qq", "postgresql", "postgresql-client"],
-                           capture_output=True, timeout=120)
+                pg_running = True
+                break
         except Exception:
             pass
-        # Try to start PostgreSQL
+
+        logger.warning(f"PostgreSQL not ready, attempting start (attempt {attempt+1}/3)")
+
+        # Check if cluster exists
         try:
+            cluster_check = subprocess.run(["pg_lsclusters", "--no-header"], capture_output=True, text=True, timeout=5)
+            cluster_output = cluster_check.stdout.strip()
+        except Exception:
+            cluster_output = ""
+
+        if not cluster_output or "15" not in cluster_output:
+            logger.info("PostgreSQL cluster missing, creating...")
+            # Ensure postgres OS user exists
+            r = subprocess.run(["id", "postgres"], capture_output=True, timeout=5)
+            if r.returncode != 0:
+                subprocess.run(["useradd", "-r", "-s", "/bin/bash", "-d", "/var/lib/postgresql", "postgres"],
+                               capture_output=True, timeout=10)
+            for d in ["/var/lib/postgresql/15/main", "/var/run/postgresql", "/var/log/postgresql"]:
+                subprocess.run(["mkdir", "-p", d], capture_output=True, timeout=5)
+            subprocess.run(["chown", "-R", "postgres:postgres", "/var/lib/postgresql", "/var/run/postgresql", "/var/log/postgresql"],
+                           capture_output=True, timeout=10)
+            subprocess.run(["pg_createcluster", "15", "main", "--start"], capture_output=True, timeout=60)
+            _time.sleep(3)
+        else:
             subprocess.run(["pg_ctlcluster", "15", "main", "start"], capture_output=True, timeout=30)
-            _time.sleep(2)
-            # Ensure DB user and database exist
-            subprocess.run(["sudo", "-u", "postgres", "psql", "-c",
-                           "CREATE USER supplierhub WITH PASSWORD 'supplierhub_pass' CREATEDB;"],
-                           capture_output=True, timeout=10)
-            subprocess.run(["sudo", "-u", "postgres", "psql", "-c",
-                           "CREATE DATABASE supplierhub_db OWNER supplierhub;"],
-                           capture_output=True, timeout=10)
-        except Exception as e:
-            logger.warning(f"PostgreSQL start attempt {attempt+1} failed: {e}")
-            _time.sleep(2)
-    return False
+            _time.sleep(3)
+
+        try:
+            result = subprocess.run(["pg_isready", "-h", "localhost"], capture_output=True, timeout=5)
+            if result.returncode == 0:
+                pg_running = True
+                break
+        except Exception:
+            pass
+
+    if not pg_running:
+        logger.error("Failed to start PostgreSQL after 3 attempts")
+        return False
+
+    # ALWAYS ensure DB user and database exist (even if PG was already running)
+    logger.info("Ensuring supplierhub user and database exist...")
+    r = subprocess.run(["sudo", "-u", "postgres", "psql", "-tAc",
+                        "SELECT 1 FROM pg_roles WHERE rolname='supplierhub'"],
+                       capture_output=True, text=True, timeout=10)
+    if "1" not in (r.stdout or ""):
+        logger.info("Creating supplierhub user...")
+        subprocess.run(["sudo", "-u", "postgres", "psql", "-c",
+                        "CREATE USER supplierhub WITH PASSWORD 'supplierhub_pass' CREATEDB;"],
+                       capture_output=True, timeout=10)
+
+    r = subprocess.run(["sudo", "-u", "postgres", "psql", "-tAc",
+                        "SELECT 1 FROM pg_catalog.pg_database WHERE datname='supplierhub_db'"],
+                       capture_output=True, text=True, timeout=10)
+    if "1" not in (r.stdout or ""):
+        logger.info("Creating supplierhub_db database...")
+        subprocess.run(["sudo", "-u", "postgres", "psql", "-c",
+                        "CREATE DATABASE supplierhub_db OWNER supplierhub;"],
+                       capture_output=True, timeout=10)
+
+    logger.info("PostgreSQL is ready")
+    return True
 
 
 # ==================== STARTUP & SHUTDOWN ====================
