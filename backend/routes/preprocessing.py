@@ -181,7 +181,7 @@ async def sync_preprocessed_to_lightspeed(data: dict = None, user: dict = Depend
             client_id=settings.get('lightspeed_client_id', ''),
             client_secret=settings.get('lightspeed_client_secret', ''),
             refresh_token=settings.get('lightspeed_refresh_token', ''),
-            token_expires_at=settings_row.get('lightspeed_token_expires_at') if hasattr(settings_row, 'get') else settings_row['lightspeed_token_expires_at'] if 'lightspeed_token_expires_at' in settings_row.keys() else None,
+            token_expires_at=settings.get('lightspeed_token_expires_at'),
         )
         conn_test = ls.test_connection()
         if not conn_test.get('connected'): raise HTTPException(400, f"Lightspeed connection failed: {conn_test.get('message')}")

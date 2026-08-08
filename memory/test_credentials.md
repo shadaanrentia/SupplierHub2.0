@@ -25,5 +25,4 @@
 - Client ID (Public Key): `public_ycmUEk1yjqgUZYzeGFCwGNxVmMDe9Wgw`
 - Client Secret (Secret Key): `secret_7LFgEv69Z2ZUmRxaKNduSeMUmQVzkw1e`
 - API Version: 2026-07
-- OAuth Callback URL: `https://product-bridge-23.preview.emergentagent.com/api/lightspeed/oauth/callback`
-- Status: Connected via Personal Token (working). OAuth flow also available.
+- Status: Connected via Personal Token (working)
