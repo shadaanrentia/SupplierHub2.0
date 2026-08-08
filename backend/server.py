@@ -28,7 +28,15 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_postgresql():
-    """Auto-start PostgreSQL if it's not running. Handles install, cluster recreation, user/db creation."""
+    """Auto-start PostgreSQL if running locally. Skip if DATABASE_URL points to an external host (e.g. Docker)."""
+    from urllib.parse import urlparse
+    parsed = urlparse(DATABASE_URL)
+    host = parsed.hostname or 'localhost'
+
+    # If database host is not localhost, assume external (Docker/cloud) — skip local management
+    if host not in ('localhost', '127.0.0.1'):
+        logger.info(f"PostgreSQL host is '{host}' (external) — skipping local management")
+        return True
     pg_running = False
 
     for attempt in range(3):
