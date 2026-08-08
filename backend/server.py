@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_postgresql():
-    """Auto-start PostgreSQL if it's not running. Handles cluster recreation."""
+    """Auto-start PostgreSQL if it's not running. Handles install, cluster recreation, user/db creation."""
     pg_running = False
 
     for attempt in range(3):
@@ -38,6 +38,14 @@ def _ensure_postgresql():
             if result.returncode == 0:
                 pg_running = True
                 break
+        except FileNotFoundError:
+            # pg_isready not found — PostgreSQL not installed
+            logger.warning("PostgreSQL not installed, installing...")
+            subprocess.run(["apt-get", "update", "-qq"], capture_output=True, timeout=60)
+            subprocess.run(["apt-get", "install", "-y", "-qq", "postgresql", "postgresql-client"],
+                           capture_output=True, timeout=120)
+            _time.sleep(2)
+            continue
         except Exception:
             pass
 
@@ -47,12 +55,17 @@ def _ensure_postgresql():
         try:
             cluster_check = subprocess.run(["pg_lsclusters", "--no-header"], capture_output=True, text=True, timeout=5)
             cluster_output = cluster_check.stdout.strip()
+        except FileNotFoundError:
+            logger.warning("pg_lsclusters not found, installing postgresql...")
+            subprocess.run(["apt-get", "install", "-y", "-qq", "postgresql", "postgresql-client"],
+                           capture_output=True, timeout=120)
+            _time.sleep(2)
+            cluster_output = ""
         except Exception:
             cluster_output = ""
 
         if not cluster_output or "15" not in cluster_output:
             logger.info("PostgreSQL cluster missing, creating...")
-            # Ensure postgres OS user exists
             r = subprocess.run(["id", "postgres"], capture_output=True, timeout=5)
             if r.returncode != 0:
                 subprocess.run(["useradd", "-r", "-s", "/bin/bash", "-d", "/var/lib/postgresql", "postgres"],
@@ -61,7 +74,10 @@ def _ensure_postgresql():
                 subprocess.run(["mkdir", "-p", d], capture_output=True, timeout=5)
             subprocess.run(["chown", "-R", "postgres:postgres", "/var/lib/postgresql", "/var/run/postgresql", "/var/log/postgresql"],
                            capture_output=True, timeout=10)
-            subprocess.run(["pg_createcluster", "15", "main", "--start"], capture_output=True, timeout=60)
+            try:
+                subprocess.run(["pg_createcluster", "15", "main", "--start"], capture_output=True, timeout=60)
+            except FileNotFoundError:
+                logger.error("pg_createcluster not found even after install attempt")
             _time.sleep(3)
         else:
             subprocess.run(["pg_ctlcluster", "15", "main", "start"], capture_output=True, timeout=30)
@@ -79,7 +95,7 @@ def _ensure_postgresql():
         logger.error("Failed to start PostgreSQL after 3 attempts")
         return False
 
-    # ALWAYS ensure DB user and database exist (even if PG was already running)
+    # ALWAYS ensure DB user and database exist
     logger.info("Ensuring supplierhub user and database exist...")
     r = subprocess.run(["sudo", "-u", "postgres", "psql", "-tAc",
                         "SELECT 1 FROM pg_roles WHERE rolname='supplierhub'"],
