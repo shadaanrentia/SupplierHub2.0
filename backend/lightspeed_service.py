@@ -288,6 +288,30 @@ class LightspeedService:
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
+    # ==================== SUPPLIERS ====================
+    def _get_or_create_supplier(self, supplier_name: str) -> str:
+        """Find or create a supplier in Lightspeed. Returns supplier_id or None."""
+        if not supplier_name:
+            return None
+        try:
+            # Search by name
+            data = self._get("suppliers", params={"name": supplier_name})
+            items = data.get("data", [])
+            if isinstance(items, list) and items:
+                return items[0].get("id")
+        except Exception:
+            pass
+        # Create new
+        try:
+            resp = self._post("suppliers", {"name": supplier_name})
+            supplier = resp.get("data", resp)
+            if isinstance(supplier, dict) and supplier.get("id"):
+                logger.info(f"Created Lightspeed supplier '{supplier_name}' (ID: {supplier['id']})")
+                return supplier["id"]
+        except Exception as e:
+            logger.warning(f"Failed to create supplier '{supplier_name}': {e}")
+        return None
+
     # ==================== PRODUCTS ====================
     def create_or_update_product(self, product: dict) -> dict:
         """Create or update a product in Lightspeed with variants and images."""
@@ -301,8 +325,14 @@ class LightspeedService:
             cost_price = float(product.get('cost_price', 0) or 0)
             sale_price = float(product.get('base_price', 0) or 0)
             variants = product.get('variants', [])
+            supplier_name = product.get('supplier_name', '')
 
-            logger.info(f"Syncing product {sku}: Cost={cost_price}, Sale={sale_price}, Variants={len(variants)}")
+            logger.info(f"Syncing product {sku}: SupplierPrice={cost_price}, RetailPrice={sale_price}, Variants={len(variants)}, Images={len(product.get('images', []))}")
+
+            # Get or create supplier in Lightspeed
+            ls_supplier_id = None
+            if supplier_name:
+                ls_supplier_id = self._get_or_create_supplier(supplier_name)
 
             # Check if product exists by SKU
             existing_product_id = self._find_product_by_sku(sku)
@@ -316,13 +346,15 @@ class LightspeedService:
                 }
                 if product.get('category_id'):
                     update_data['product_category_id'] = str(product['category_id'])
+                if ls_supplier_id:
+                    update_data['supplier_id'] = ls_supplier_id
                 data = self._put(f"products/{existing_product_id}", update_data)
                 ls_product = data.get('data', data)
                 ls_id = ls_product.get('id', existing_product_id) if isinstance(ls_product, dict) else existing_product_id
                 logger.info(f"Updated product {sku} (ID: {ls_id})")
             else:
                 # Create new product
-                ls_id = self._create_product(product, variants, cost_price, sale_price)
+                ls_id = self._create_product(product, variants, cost_price, sale_price, ls_supplier_id)
 
             if not ls_id:
                 return {'success': False, 'error': 'Failed to get product ID from Lightspeed'}
@@ -347,7 +379,7 @@ class LightspeedService:
             logger.error(f"Lightspeed push error: {e}")
             return {'success': False, 'error': str(e)}
 
-    def _create_product(self, product: dict, variants: list, cost_price: float, sale_price: float) -> str:
+    def _create_product(self, product: dict, variants: list, cost_price: float, sale_price: float, supplier_id: str = None) -> str:
         """Create a product, with or without variants."""
         product_name = product.get('product_name', '')
         description = product.get('description', '') or ''
@@ -367,7 +399,7 @@ class LightspeedService:
             attr_map = self._ensure_variant_attributes(list(attr_names))
             if not attr_map:
                 logger.warning("No variant attributes, creating simple product")
-                return self._create_simple_product(product_name, description, sku, cost_price, sale_price, category_id)
+                return self._create_simple_product(product_name, description, sku, cost_price, sale_price, category_id, supplier_id)
 
             variant_list = []
             for v in variants:
@@ -392,7 +424,7 @@ class LightspeedService:
                 })
 
             if not variant_list:
-                return self._create_simple_product(product_name, description, sku, cost_price, sale_price, category_id)
+                return self._create_simple_product(product_name, description, sku, cost_price, sale_price, category_id, supplier_id)
 
             payload = {
                 'name': product_name,
@@ -404,13 +436,15 @@ class LightspeedService:
             }
             if category_id:
                 payload['product_category_id'] = str(category_id)
+            if supplier_id:
+                payload['supplier_id'] = supplier_id
 
             response = self._post("products", payload)
             return self._extract_product_id(response, product_name)
         else:
-            return self._create_simple_product(product_name, description, sku, cost_price, sale_price, category_id)
+            return self._create_simple_product(product_name, description, sku, cost_price, sale_price, category_id, supplier_id)
 
-    def _create_simple_product(self, name, description, sku, cost_price, sale_price, category_id) -> str:
+    def _create_simple_product(self, name, description, sku, cost_price, sale_price, category_id, supplier_id=None) -> str:
         """Create a simple product without variants."""
         payload = {
             'name': name,
@@ -423,6 +457,8 @@ class LightspeedService:
         }
         if category_id:
             payload['product_category_id'] = str(category_id)
+        if supplier_id:
+            payload['supplier_id'] = supplier_id
 
         response = self._post("products", payload)
         return self._extract_product_id(response, name)

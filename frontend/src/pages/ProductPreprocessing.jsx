@@ -8,7 +8,7 @@ import { Badge } from "../components/ui/badge";
 import { 
   RefreshCw, Package, DollarSign, CheckCircle, XCircle, 
   AlertTriangle, Eye, Upload, Calculator, Layers, Image,
-  ArrowRight, Filter
+  ArrowRight, Filter, Zap
 } from "lucide-react";
 import {
   Dialog,
@@ -37,6 +37,7 @@ export default function ProductPreprocessing() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const [syncPlatform, setSyncPlatform] = useState("lightspeed");
   const limit = 25;
 
   const fetchProducts = useCallback(async () => {
@@ -98,6 +99,9 @@ export default function ProductPreprocessing() {
     }
   };
 
+  const syncEndpoint = syncPlatform === "odoo" ? "sync-to-odoo" : "sync-to-lightspeed";
+  const platformLabel = syncPlatform === "odoo" ? "Odoo" : "Lightspeed";
+
   const syncSelected = async () => {
     if (selectedProducts.size === 0) {
       toast.error("No products selected");
@@ -105,11 +109,11 @@ export default function ProductPreprocessing() {
     }
     setSyncing(true);
     try {
-      const res = await axios.post(`${API}/preprocessing/sync-to-odoo`, {
+      const res = await axios.post(`${API}/preprocessing/${syncEndpoint}`, {
         product_ids: Array.from(selectedProducts)
       });
       if (res.data.synced > 0) {
-        toast.success(`Synced ${res.data.synced} products to Odoo`);
+        toast.success(`Synced ${res.data.synced} products to ${platformLabel}`);
       }
       if (res.data.failed > 0) {
         toast.error(`Failed to sync ${res.data.failed} products`);
@@ -118,7 +122,7 @@ export default function ProductPreprocessing() {
       fetchProducts();
       fetchSummary();
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Sync failed");
+      toast.error(e.response?.data?.detail || `Sync to ${platformLabel} failed`);
     } finally {
       setSyncing(false);
     }
@@ -127,9 +131,9 @@ export default function ProductPreprocessing() {
   const syncAll = async () => {
     setSyncing(true);
     try {
-      const res = await axios.post(`${API}/preprocessing/sync-to-odoo`, { sync_all: true });
+      const res = await axios.post(`${API}/preprocessing/${syncEndpoint}`, { sync_all: true });
       if (res.data.synced > 0) {
-        toast.success(`Synced ${res.data.synced} products to Odoo`);
+        toast.success(`Synced ${res.data.synced} products to ${platformLabel}`);
       }
       if (res.data.failed > 0) {
         toast.error(`Failed to sync ${res.data.failed} products`);
@@ -137,7 +141,7 @@ export default function ProductPreprocessing() {
       fetchProducts();
       fetchSummary();
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Sync failed");
+      toast.error(e.response?.data?.detail || `Sync to ${platformLabel} failed`);
     } finally {
       setSyncing(false);
     }
@@ -181,11 +185,11 @@ export default function ProductPreprocessing() {
   return (
     <div className="p-6 space-y-6" data-testid="product-preprocessing-page">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-bold text-zinc-100">Product Preprocessing</h1>
           <p className="text-sm text-zinc-500 mt-1">
-            Validate, calculate prices, and sync products to Odoo
+            Validate, calculate prices, and sync products to {platformLabel}
           </p>
         </div>
         <div className="flex gap-2">
@@ -253,7 +257,7 @@ export default function ProductPreprocessing() {
                 <Upload className="w-8 h-8 text-emerald-400" />
                 <div>
                   <p className="text-2xl font-bold text-zinc-100">{summary.sync_status?.synced || 0}</p>
-                  <p className="text-xs text-zinc-500">Synced to Odoo</p>
+                  <p className="text-xs text-zinc-500">Synced</p>
                 </div>
               </div>
             </CardContent>
@@ -329,9 +333,9 @@ export default function ProductPreprocessing() {
                       <th className="text-left py-2 px-3 w-10"></th>
                       <th className="text-left py-2 px-3">Product</th>
                       <th className="text-left py-2 px-3">Supplier Category</th>
-                      <th className="text-left py-2 px-3">Odoo Category</th>
-                      <th className="text-right py-2 px-3">Cost</th>
-                      <th className="text-right py-2 px-3">Sale Price</th>
+                      <th className="text-left py-2 px-3">Mapped Category</th>
+                      <th className="text-right py-2 px-3">Supplier Price</th>
+                      <th className="text-right py-2 px-3">Retail Price</th>
                       <th className="text-center py-2 px-3">Variants</th>
                       <th className="text-center py-2 px-3">Images</th>
                       <th className="text-center py-2 px-3">Status</th>
@@ -362,12 +366,12 @@ export default function ProductPreprocessing() {
                           </div>
                         </td>
                         <td className="py-2 px-3 text-zinc-400">
-                          {product.category || <span className="text-zinc-600">—</span>}
+                          {product.category || <span className="text-zinc-600">--</span>}
                         </td>
                         <td className="py-2 px-3">
-                          {product.odoo_category_name ? (
+                          {(product.odoo_category_name || product.mapped_lightspeed_category_id) ? (
                             <Badge variant="outline" className="bg-green-900/20 text-green-400 border-green-800">
-                              {product.odoo_category_name}
+                              {product.odoo_category_name || "Lightspeed Mapped"}
                             </Badge>
                           ) : (
                             <Badge variant="outline" className="bg-red-900/20 text-red-400 border-red-800">
@@ -451,7 +455,7 @@ export default function ProductPreprocessing() {
       {/* Sync Actions */}
       <Card className="bg-zinc-900/50 border-zinc-800">
         <CardContent className="p-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-4">
               <p className="text-sm text-zinc-400">
                 <span className="font-bold text-zinc-100">{selectedProducts.size}</span> products selected
@@ -462,11 +466,25 @@ export default function ProductPreprocessing() {
                 </p>
               )}
             </div>
-            <div className="flex gap-3">
+            <div className="flex items-center gap-3">
+              <Select value={syncPlatform} onValueChange={setSyncPlatform}>
+                <SelectTrigger className="w-[180px] bg-zinc-800 border-zinc-700" data-testid="sync-platform-selector">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-zinc-900 border-zinc-800">
+                  <SelectItem value="lightspeed">
+                    <span className="flex items-center gap-2"><Zap className="w-3 h-3 text-emerald-400" /> Lightspeed</span>
+                  </SelectItem>
+                  <SelectItem value="odoo">
+                    <span className="flex items-center gap-2"><ArrowRight className="w-3 h-3 text-blue-400" /> Odoo ERP</span>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
               <Button 
                 onClick={syncSelected}
                 disabled={syncing || selectedProducts.size === 0}
-                className="bg-blue-600 hover:bg-blue-700"
+                className={syncPlatform === "lightspeed" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-blue-600 hover:bg-blue-700"}
+                data-testid="sync-selected-btn"
               >
                 {syncing ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
                 Sync Selected ({selectedProducts.size})
@@ -474,10 +492,11 @@ export default function ProductPreprocessing() {
               <Button 
                 onClick={syncAll}
                 disabled={syncing}
-                className="bg-green-600 hover:bg-green-700"
+                className={syncPlatform === "lightspeed" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-green-600 hover:bg-green-700"}
+                data-testid="sync-all-btn"
               >
                 {syncing ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
-                Sync All Ready
+                Sync All Ready to {platformLabel}
               </Button>
             </div>
           </div>
@@ -488,13 +507,13 @@ export default function ProductPreprocessing() {
       <Dialog open={showPreview} onOpenChange={setShowPreview}>
         <DialogContent className="bg-zinc-900 border-zinc-800 max-w-3xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Product Preview for Odoo</DialogTitle>
+            <DialogTitle>Product Preview</DialogTitle>
           </DialogHeader>
           {previewProduct && (
             <div className="space-y-6 py-4">
               {/* Product Template */}
               <div>
-                <h3 className="text-sm font-semibold text-zinc-400 mb-2">Product Template</h3>
+                <h3 className="text-sm font-semibold text-zinc-400 mb-2">Product Details</h3>
                 <div className="bg-zinc-800/50 rounded-lg p-4 space-y-2">
                   <div className="flex justify-between">
                     <span className="text-zinc-500">Name:</span>
@@ -511,11 +530,11 @@ export default function ProductPreprocessing() {
                     </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-zinc-500">Cost Price:</span>
+                    <span className="text-zinc-500">Supplier Price (before markup):</span>
                     <span className="font-mono text-zinc-400">{formatPrice(previewProduct.product_template.standard_price)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-zinc-500">Sale Price:</span>
+                    <span className="text-zinc-500">Retail Price (after markup):</span>
                     <span className="font-mono text-green-400 font-bold">{formatPrice(previewProduct.product_template.list_price)}</span>
                   </div>
                 </div>
@@ -564,8 +583,8 @@ export default function ProductPreprocessing() {
                       {previewProduct.variants.slice(0, 20).map((v, i) => (
                         <tr key={i} className="text-zinc-300">
                           <td className="py-1 font-mono">{v.sku}</td>
-                          <td className="py-1">{v.color || '—'}</td>
-                          <td className="py-1">{v.size || '—'}</td>
+                          <td className="py-1">{v.color || '--'}</td>
+                          <td className="py-1">{v.size || '--'}</td>
                           <td className="py-1 text-right">{v.inventory}</td>
                         </tr>
                       ))}

@@ -163,6 +163,102 @@ async def sync_preprocessed_to_odoo(data: dict = None, user: dict = Depends(get_
         return {"success": True, "total": len(products), "synced": synced, "failed": failed, "errors": errors[:10]}
 
 
+@router.post("/preprocessing/sync-to-lightspeed")
+async def sync_preprocessed_to_lightspeed(data: dict = None, user: dict = Depends(get_current_user)):
+    from lightspeed_service import LightspeedService
+    product_ids = data.get('product_ids', []) if data else []
+    sync_all = data.get('sync_all', False) if data else False
+    async with deps.pool.acquire() as conn:
+        settings_row = await conn.fetchrow("SELECT * FROM settings WHERE id = 'system_settings'")
+        if not settings_row: raise HTTPException(400, "Settings not configured")
+        settings = row_to_dict(settings_row)
+        markup = float(settings.get('markup_percentage') or 40)
+
+        ls = LightspeedService(
+            domain_prefix=settings.get('lightspeed_store_id', ''),
+            personal_token=settings.get('lightspeed_secret_token', ''),
+            access_token=settings.get('lightspeed_access_token', ''),
+            client_id=settings.get('lightspeed_client_id', ''),
+            client_secret=settings.get('lightspeed_client_secret', ''),
+            refresh_token=settings.get('lightspeed_refresh_token', ''),
+            token_expires_at=settings_row.get('lightspeed_token_expires_at') if hasattr(settings_row, 'get') else settings_row['lightspeed_token_expires_at'] if 'lightspeed_token_expires_at' in settings_row.keys() else None,
+        )
+        conn_test = ls.test_connection()
+        if not conn_test.get('connected'): raise HTTPException(400, f"Lightspeed connection failed: {conn_test.get('message')}")
+
+        if sync_all:
+            products = await conn.fetch('''
+                SELECT p.*, cm.lightspeed_category_id, s.supplier_name, pss.sale_price
+                FROM products p
+                INNER JOIN category_mapping cm ON p.category = cm.supplier_category_name
+                LEFT JOIN suppliers s ON p.supplier_id = s.id
+                LEFT JOIN product_sync_status pss ON p.id = pss.product_id
+                WHERE cm.lightspeed_category_id IS NOT NULL AND p.base_price > 0
+                AND (p.lightspeed_sync_status != 'synced' OR p.lightspeed_sync_status IS NULL)
+            ''')
+        elif product_ids:
+            products = await conn.fetch('''
+                SELECT p.*, cm.lightspeed_category_id, s.supplier_name, pss.sale_price
+                FROM products p
+                LEFT JOIN category_mapping cm ON p.category = cm.supplier_category_name
+                LEFT JOIN suppliers s ON p.supplier_id = s.id
+                LEFT JOIN product_sync_status pss ON p.id = pss.product_id
+                WHERE p.id = ANY($1)
+            ''', product_ids)
+        else:
+            return {"success": False, "error": "No products specified"}
+
+        synced = 0; failed = 0; errors = []
+        for p in products:
+            product = row_to_dict(p)
+            try:
+                cost = float(product.get('base_price') or 0)
+                sale_price = product.get('sale_price') or calculate_sale_price(cost, markup)
+                supplier_name = product.get('supplier_name', '')
+
+                variants = await conn.fetch("SELECT * FROM product_variants WHERE product_id = $1", product['id'])
+                images = await conn.fetch("SELECT * FROM product_media WHERE product_id = $1", product['id'])
+
+                ls_data = {
+                    'product_name': product.get('product_name'),
+                    'supplier_sku': product.get('supplier_sku'),
+                    'description': product.get('description'),
+                    'base_price': float(sale_price),
+                    'cost_price': cost,
+                    'category_id': product.get('lightspeed_category_id'),
+                    'supplier_name': supplier_name,
+                    'variants': [row_to_dict(v) for v in variants],
+                    'images': [row_to_dict(i) for i in images],
+                }
+                result = ls.create_or_update_product(ls_data)
+                if result.get('success'):
+                    await conn.execute(
+                        "UPDATE products SET lightspeed_sync_status='synced', lightspeed_product_id=$1, updated_at=NOW() WHERE id=$2",
+                        str(result.get('lightspeed_id', '')), product['id'])
+                    await conn.execute("""
+                        INSERT INTO product_sync_status (id, product_id, sync_status, last_sync_date, updated_at)
+                        VALUES ($1, $2, 'synced', NOW(), NOW())
+                        ON CONFLICT (product_id) DO UPDATE SET sync_status='synced', last_sync_date=NOW(), updated_at=NOW()
+                    """, new_id(), product['id'])
+                    synced += 1
+                else:
+                    await conn.execute("UPDATE products SET lightspeed_sync_status='failed', updated_at=NOW() WHERE id=$1", product['id'])
+                    failed += 1; errors.append({'product_id': product['id'], 'sku': product.get('supplier_sku'), 'error': result.get('error')})
+            except Exception as e:
+                logger.error(f"Error syncing {product.get('supplier_sku')} to Lightspeed: {e}")
+                failed += 1; errors.append({'product_id': product['id'], 'sku': product.get('supplier_sku'), 'error': str(e)})
+
+        # Persist refreshed token if applicable
+        if ls.token_was_refreshed:
+            await conn.execute("""
+                UPDATE settings SET lightspeed_access_token = $1, lightspeed_token_expires_at = $2, updated_at = NOW()
+                WHERE id = 'system_settings'
+            """, ls.access_token, ls.token_expires_at)
+
+    return {"success": True, "total": len(products), "synced": synced, "failed": failed, "errors": errors[:10]}
+
+
+
 @router.get("/preprocessing/product/{product_id}/preview")
 async def preview_product_for_odoo(product_id: str, user: dict = Depends(get_current_user)):
     async with deps.pool.acquire() as conn:

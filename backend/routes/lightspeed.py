@@ -259,8 +259,9 @@ async def lightspeed_push_task(supplier_id: str, log_id: str):
                 """, ls.access_token, ls.token_expires_at, utc_now())
 
             products = await conn.fetch('''
-                SELECT p.*, cm.lightspeed_category_id FROM products p
+                SELECT p.*, cm.lightspeed_category_id, s.supplier_name FROM products p
                 LEFT JOIN category_mapping cm ON p.category = cm.supplier_category_name
+                LEFT JOIN suppliers s ON p.supplier_id = s.id
                 WHERE p.selected_for_lightspeed = TRUE AND p.lightspeed_sync_status = 'pending' AND p.supplier_id = $1
             ''', supplier_id)
         if not products:
@@ -278,6 +279,7 @@ async def lightspeed_push_task(supplier_id: str, log_id: str):
                 'product_name': product.get('product_name'), 'supplier_sku': product.get('supplier_sku'),
                 'description': product.get('description'), 'base_price': sale_price, 'cost_price': cost,
                 'category_id': product.get('lightspeed_category_id'),
+                'supplier_name': product.get('supplier_name', ''),
                 'variants': [row_to_dict(v) for v in variants], 'images': [row_to_dict(img) for img in images],
             }
             result = ls.create_or_update_product(ls_data)
