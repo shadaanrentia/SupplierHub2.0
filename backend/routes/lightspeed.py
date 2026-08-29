@@ -1,28 +1,23 @@
 """Lightspeed (X-Series) routes: OAuth, test, categories, push."""
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import RedirectResponse
+import asyncio
 import deps
-from deps import row_to_dict, utc_now, new_id, get_current_user, calculate_sale_price, create_sync_log, update_sync_log
+from deps import row_to_dict, utc_now, get_current_user, calculate_sale_price, create_sync_log, update_sync_log
 import logging
 import secrets
 import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
-
-FRONTEND_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
-
-# In-memory state store for OAuth CSRF protection
+FRONTEND_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 _oauth_states: dict = {}
 
-
 async def _get_lightspeed_settings():
-    """Fetch all Lightspeed-related settings."""
     async with deps.pool.acquire() as conn:
         row = await conn.fetchrow("""
-            SELECT lightspeed_store_id, lightspeed_secret_token,
-                   lightspeed_client_id, lightspeed_client_secret,
-                   lightspeed_access_token, lightspeed_refresh_token,
+            SELECT lightspeed_store_id, lightspeed_secret_token, lightspeed_client_id,
+                   lightspeed_client_secret, lightspeed_access_token, lightspeed_refresh_token,
                    lightspeed_token_expires_at
             FROM settings WHERE id = 'system_settings'
         """)
@@ -30,203 +25,168 @@ async def _get_lightspeed_settings():
         raise HTTPException(404, "Settings not found")
     return dict(row)
 
-
 async def _get_ls_service():
-    """Get a LightspeedService configured with the best available credentials."""
     from lightspeed_service import LightspeedService
     s = await _get_lightspeed_settings()
-    domain = s.get('lightspeed_store_id') or ''
-    access_token = s.get('lightspeed_access_token') or ''
-    personal_token = s.get('lightspeed_secret_token') or ''
-    client_id = s.get('lightspeed_client_id') or ''
-    client_secret = s.get('lightspeed_client_secret') or ''
-    refresh_token = s.get('lightspeed_refresh_token') or ''
-    expires_at = s.get('lightspeed_token_expires_at')
-
     ls = LightspeedService(
-        domain_prefix=domain,
-        personal_token=personal_token,
-        access_token=access_token,
-        client_id=client_id,
-        client_secret=client_secret,
-        refresh_token=refresh_token,
-        token_expires_at=expires_at,
+        domain_prefix=s.get("lightspeed_store_id") or "",
+        personal_token=s.get("lightspeed_secret_token") or "",
+        access_token=s.get("lightspeed_access_token") or "",
+        client_id=s.get("lightspeed_client_id") or "",
+        client_secret=s.get("lightspeed_client_secret") or "",
+        refresh_token=s.get("lightspeed_refresh_token") or "",
+        token_expires_at=s.get("lightspeed_token_expires_at"),
     )
-
-    # If token was refreshed, persist the new one
     if ls.token_was_refreshed:
         async with deps.pool.acquire() as conn:
             await conn.execute("""
-                UPDATE settings SET lightspeed_access_token = $1, lightspeed_token_expires_at = $2, updated_at = $3
+                UPDATE settings
+                SET lightspeed_access_token = $1, lightspeed_token_expires_at = $2, updated_at = $3
                 WHERE id = 'system_settings'
             """, ls.access_token, ls.token_expires_at, utc_now())
-        logger.info("Persisted refreshed Lightspeed access token")
-
     return ls
 
-
-# ==================== OAUTH ====================
 @router.get("/lightspeed/oauth/authorize")
 async def lightspeed_oauth_authorize(request: Request, user: dict = Depends(get_current_user)):
-    """Generate the Lightspeed OAuth authorization URL."""
     s = await _get_lightspeed_settings()
-    client_id = s.get('lightspeed_client_id') or ''
-    domain = s.get('lightspeed_store_id') or ''
-
+    client_id = s.get("lightspeed_client_id") or ""
+    domain = s.get("lightspeed_store_id") or ""
     if not client_id:
         raise HTTPException(400, "Lightspeed Client ID (Public Key) not configured. Save it in Settings first.")
     if not domain:
         raise HTTPException(400, "Lightspeed Domain Prefix not configured. Save it in Settings first.")
-
     state = secrets.token_urlsafe(32)
     _oauth_states[state] = True
-
     callback_url = f"{FRONTEND_URL}/api/lightspeed/oauth/callback"
     scopes = "products:read products:write inventory:read"
-
-    auth_url = (
-        f"https://secure.retail.lightspeed.app/connect"
-        f"?response_type=code"
-        f"&client_id={client_id}"
-        f"&redirect_uri={callback_url}"
-        f"&state={state}"
-        f"&scope={scopes}"
-    )
-
+    auth_url = f"https://secure.retail.lightspeed.app/connect?response_type=code&client_id={client_id}&redirect_uri={callback_url}&state={state}&scope={scopes}"
     return {"authorize_url": auth_url, "state": state}
-
 
 @router.get("/lightspeed/oauth/callback")
 async def lightspeed_oauth_callback(code: str = None, state: str = None, error: str = None, domain_prefix: str = None):
-    """Handle the OAuth callback from Lightspeed."""
     import requests as http_requests
-
     frontend_settings_url = f"{FRONTEND_URL}/settings"
-
     if error:
         logger.error(f"Lightspeed OAuth error: {error}")
         return RedirectResponse(f"{frontend_settings_url}?ls_oauth=error&message={error}")
-
     if not code:
         return RedirectResponse(f"{frontend_settings_url}?ls_oauth=error&message=No+authorization+code+received")
-
     if state and state in _oauth_states:
         del _oauth_states[state]
-
-    # Get settings for client credentials and domain
     async with deps.pool.acquire() as conn:
         row = await conn.fetchrow("""
             SELECT lightspeed_store_id, lightspeed_client_id, lightspeed_client_secret
             FROM settings WHERE id = 'system_settings'
         """)
-
     if not row:
         return RedirectResponse(f"{frontend_settings_url}?ls_oauth=error&message=Settings+not+found")
-
-    domain = domain_prefix or row['lightspeed_store_id'] or ''
-    client_id = row['lightspeed_client_id'] or ''
-    client_secret = row['lightspeed_client_secret'] or ''
-
+    domain = domain_prefix or row["lightspeed_store_id"] or ""
+    client_id = row["lightspeed_client_id"] or ""
+    client_secret = row["lightspeed_client_secret"] or ""
     if not all([domain, client_id, client_secret]):
         return RedirectResponse(f"{frontend_settings_url}?ls_oauth=error&message=Missing+client+credentials")
-
     callback_url = f"{FRONTEND_URL}/api/lightspeed/oauth/callback"
     token_url = f"https://{domain}.retail.lightspeed.app/api/1.0/token"
-
     try:
         resp = http_requests.post(token_url, data={
-            'grant_type': 'authorization_code',
-            'code': code,
-            'client_id': client_id,
-            'client_secret': client_secret,
-            'redirect_uri': callback_url,
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "client_secret": client_secret, "redirect_uri": callback_url
         }, timeout=30)
-
         if resp.status_code != 200:
-            body = resp.text[:300]
-            logger.error(f"Lightspeed token exchange failed ({resp.status_code}): {body}")
+            logger.error(f"Lightspeed token exchange failed ({resp.status_code}): {resp.text[:300]}")
             return RedirectResponse(f"{frontend_settings_url}?ls_oauth=error&message=Token+exchange+failed:+{resp.status_code}")
-
         token_data = resp.json()
-        access_token = token_data.get('access_token', '')
-        refresh_token = token_data.get('refresh_token', '')
-        expires_in = int(token_data.get('expires_in', 86400))
-
+        access_token = token_data.get("access_token", "")
+        refresh_token = token_data.get("refresh_token", "")
+        expires_in = int(token_data.get("expires_in", 86400))
         from datetime import datetime, timezone, timedelta
         expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=expires_in)
-
-        # If domain_prefix came from the callback, also save it
-        if domain_prefix and domain_prefix != row['lightspeed_store_id']:
-            async with deps.pool.acquire() as conn:
+        async with deps.pool.acquire() as conn:
+            if domain_prefix and domain_prefix != row["lightspeed_store_id"]:
                 await conn.execute("""
-                    UPDATE settings SET lightspeed_access_token = $1, lightspeed_refresh_token = $2,
-                           lightspeed_token_expires_at = $3, lightspeed_store_id = $4, updated_at = $5
+                    UPDATE settings
+                    SET lightspeed_access_token = $1, lightspeed_refresh_token = $2,
+                        lightspeed_token_expires_at = $3, lightspeed_store_id = $4, updated_at = $5
                     WHERE id = 'system_settings'
                 """, access_token, refresh_token, expires_at, domain_prefix, utc_now())
-        else:
-            async with deps.pool.acquire() as conn:
+            else:
                 await conn.execute("""
-                    UPDATE settings SET lightspeed_access_token = $1, lightspeed_refresh_token = $2,
-                           lightspeed_token_expires_at = $3, updated_at = $4
+                    UPDATE settings
+                    SET lightspeed_access_token = $1, lightspeed_refresh_token = $2,
+                        lightspeed_token_expires_at = $3, updated_at = $4
                     WHERE id = 'system_settings'
                 """, access_token, refresh_token, expires_at, utc_now())
-
         logger.info(f"Lightspeed OAuth tokens saved (expires in {expires_in}s)")
         return RedirectResponse(f"{frontend_settings_url}?ls_oauth=success")
-
     except Exception as e:
         logger.error(f"Lightspeed OAuth token exchange error: {e}")
         return RedirectResponse(f"{frontend_settings_url}?ls_oauth=error&message=Token+exchange+error")
 
-
 @router.post("/lightspeed/oauth/disconnect")
 async def lightspeed_oauth_disconnect(user: dict = Depends(get_current_user)):
-    """Clear stored OAuth tokens."""
     async with deps.pool.acquire() as conn:
         await conn.execute("""
-            UPDATE settings SET lightspeed_access_token = '', lightspeed_refresh_token = '',
-                   lightspeed_token_expires_at = NULL, updated_at = $1
+            UPDATE settings
+            SET lightspeed_access_token = '', lightspeed_refresh_token = '',
+                lightspeed_token_expires_at = NULL, updated_at = $1
             WHERE id = 'system_settings'
         """, utc_now())
     return {"status": "disconnected", "success": True}
 
-
-# ==================== TEST CONNECTION ====================
 @router.post("/settings/lightspeed/test")
 async def test_lightspeed_connection(user: dict = Depends(get_current_user)):
     ls = await _get_ls_service()
     result = ls.test_connection()
-    # Persist refreshed token if applicable
     if ls.token_was_refreshed:
         async with deps.pool.acquire() as conn:
             await conn.execute("""
-                UPDATE settings SET lightspeed_access_token = $1, lightspeed_token_expires_at = $2, updated_at = $3
+                UPDATE settings
+                SET lightspeed_access_token = $1, lightspeed_token_expires_at = $2, updated_at = $3
                 WHERE id = 'system_settings'
             """, ls.access_token, ls.token_expires_at, utc_now())
     return result
 
-
-# ==================== CATEGORIES ====================
 @router.get("/categories/lightspeed")
 async def get_lightspeed_categories(user: dict = Depends(get_current_user)):
     ls = await _get_ls_service()
     return ls.get_categories()
 
-
-# ==================== PUSH TO LIGHTSPEED ====================
 @router.post("/sync/lightspeed/{supplier_id}")
 async def push_to_lightspeed(supplier_id: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     async with deps.pool.acquire() as conn:
         supplier = await conn.fetchrow("SELECT supplier_name FROM suppliers WHERE id = $1", supplier_id)
         if not supplier:
             raise HTTPException(404, "Supplier not found")
-        count = await conn.fetchval(
-            "SELECT COUNT(*) FROM products WHERE selected_for_lightspeed = TRUE AND lightspeed_sync_status = 'pending' AND supplier_id = $1",
-            supplier_id)
-    log_id = await create_sync_log(supplier_id, supplier['supplier_name'], "lightspeed_push", f"Pushing {count} products to Lightspeed...")
+        count = await conn.fetchval("""
+            SELECT COUNT(*)
+            FROM products
+            WHERE selected_for_lightspeed = TRUE
+              AND lightspeed_sync_status = 'pending'
+              AND supplier_id = $1
+        """, supplier_id)
+    log_id = await create_sync_log(
+        supplier_id, supplier["supplier_name"], "lightspeed_push",
+        f"Pushing {count} products to Lightspeed..."
+    )
     background_tasks.add_task(lightspeed_push_task, supplier_id, log_id)
     return {"status": "started", "log_id": log_id, "products_to_push": count}
 
+async def _process_lightspeed_product(ls, product, variants, images, markup):
+    product_data = row_to_dict(product)
+    cost = float(product_data.get("base_price") or 0)
+    sale_price = calculate_sale_price(cost, markup)
+    ls_data = {
+        "product_name": product_data.get("product_name"),
+        "supplier_sku": product_data.get("supplier_sku"),
+        "description": product_data.get("description"),
+        "base_price": sale_price,
+        "cost_price": cost,
+        "category_id": product_data.get("lightspeed_category_id"),
+        "supplier_name": product_data.get("supplier_name", ""),
+        "variants": [row_to_dict(v) for v in variants],
+        "images": [row_to_dict(img) for img in images],
+    }
+    return await ls.create_or_update_product(ls_data)
 
 async def lightspeed_push_task(supplier_id: str, log_id: str):
     from lightspeed_service import LightspeedService
@@ -234,69 +194,109 @@ async def lightspeed_push_task(supplier_id: str, log_id: str):
         async with deps.pool.acquire() as conn:
             settings_row = await conn.fetchrow("SELECT * FROM settings WHERE id = 'system_settings'")
             settings = row_to_dict(settings_row)
-            markup = float(settings.get('markup_percentage') or 40)
-
-            ls = LightspeedService(
-                domain_prefix=settings.get('lightspeed_store_id', ''),
-                personal_token=settings.get('lightspeed_secret_token', ''),
-                access_token=settings.get('lightspeed_access_token', ''),
-                client_id=settings.get('lightspeed_client_id', ''),
-                client_secret=settings.get('lightspeed_client_secret', ''),
-                refresh_token=settings.get('lightspeed_refresh_token', ''),
-                token_expires_at=settings_row['lightspeed_token_expires_at'] if settings_row else None,
-            )
-
-            conn_test = ls.test_connection()
-            if not conn_test.get('connected'):
-                await update_sync_log(log_id, 'failed', f"Lightspeed connection failed: {conn_test.get('message')}")
-                return
-
-            # Persist refreshed token if applicable
-            if ls.token_was_refreshed:
-                await conn.execute("""
-                    UPDATE settings SET lightspeed_access_token = $1, lightspeed_token_expires_at = $2, updated_at = $3
-                    WHERE id = 'system_settings'
-                """, ls.access_token, ls.token_expires_at, utc_now())
-
-            products = await conn.fetch('''
-                SELECT p.*, cm.lightspeed_category_id, s.supplier_name FROM products p
+            markup = float(settings.get("markup_percentage") or 40)
+            products = await conn.fetch("""
+                SELECT p.*, cm.lightspeed_category_id, s.supplier_name
+                FROM products p
                 LEFT JOIN category_mapping cm ON p.category = cm.supplier_category_name
                 LEFT JOIN suppliers s ON p.supplier_id = s.id
-                WHERE p.selected_for_lightspeed = TRUE AND p.lightspeed_sync_status = 'pending' AND p.supplier_id = $1
-            ''', supplier_id)
+                WHERE p.selected_for_lightspeed = TRUE
+                  AND p.lightspeed_sync_status = 'pending'
+                  AND p.supplier_id = $1
+            """, supplier_id)
         if not products:
-            await update_sync_log(log_id, 'completed', 'No pending products for Lightspeed', progress=100)
+            await update_sync_log(log_id, "completed", "No pending products for Lightspeed", progress=100)
             return
-        synced = 0; failed = 0; total = len(products)
-        for i, p in enumerate(products):
-            product = row_to_dict(p)
+        ls = LightspeedService(
+            domain_prefix=settings.get("lightspeed_store_id", ""),
+            personal_token=settings.get("lightspeed_secret_token", ""),
+            access_token=settings.get("lightspeed_access_token", ""),
+            client_id=settings.get("lightspeed_client_id", ""),
+            client_secret=settings.get("lightspeed_client_secret", ""),
+            refresh_token=settings.get("lightspeed_refresh_token", ""),
+            token_expires_at=settings_row["lightspeed_token_expires_at"] if settings_row else None,
+        )
+        conn_test = await asyncio.to_thread(ls.test_connection)
+        if not conn_test.get("connected"):
+            await update_sync_log(log_id, "failed", f"Lightspeed connection failed: {conn_test.get('message')}")
+            return
+        if ls.token_was_refreshed:
             async with deps.pool.acquire() as conn:
-                variants = await conn.fetch("SELECT * FROM product_variants WHERE product_id = $1", product['id'])
-                images = await conn.fetch("SELECT * FROM product_media WHERE product_id = $1", product['id'])
-            cost = float(product.get('base_price') or 0)
-            sale_price = calculate_sale_price(cost, markup)
-            ls_data = {
-                'product_name': product.get('product_name'), 'supplier_sku': product.get('supplier_sku'),
-                'description': product.get('description'), 'base_price': sale_price, 'cost_price': cost,
-                'category_id': product.get('lightspeed_category_id'),
-                'supplier_name': product.get('supplier_name', ''),
-                'variants': [row_to_dict(v) for v in variants], 'images': [row_to_dict(img) for img in images],
-            }
-            result = ls.create_or_update_product(ls_data)
-            if result.get('success'):
-                async with deps.pool.acquire() as conn:
-                    await conn.execute("UPDATE products SET lightspeed_sync_status = 'synced', lightspeed_product_id = $1, updated_at = $2 WHERE id = $3",
-                        str(result.get('lightspeed_id', '')), utc_now(), product['id'])
-                synced += 1
-            else:
-                async with deps.pool.acquire() as conn:
-                    await conn.execute("UPDATE products SET lightspeed_sync_status = 'failed', updated_at = $1 WHERE id = $2", utc_now(), product['id'])
-                failed += 1
-            progress = int(((i + 1) / total) * 100)
-            await update_sync_log(log_id, 'running', f'Pushed {synced}/{total} to Lightspeed ({failed} failed)', progress=progress, total=total, processed=synced)
+                await conn.execute("""
+                    UPDATE settings
+                    SET lightspeed_access_token = $1, lightspeed_token_expires_at = $2, updated_at = $3
+                    WHERE id = 'system_settings'
+                """, ls.access_token, ls.token_expires_at, utc_now())
+        product_ids = [p["id"] for p in products]
+        async with deps.pool.acquire() as conn:
+            variants_rows = await conn.fetch("""
+                SELECT * FROM product_variants
+                WHERE product_id = ANY($1::uuid[])
+            """, product_ids)
+            media_rows = await conn.fetch("""
+                SELECT * FROM product_media
+                WHERE product_id = ANY($1::uuid[])
+            """, product_ids)
+        variants_by_product = {}
+        for variant in variants_rows:
+            variants_by_product.setdefault(str(variant["product_id"]), []).append(variant)
+        media_by_product = {}
+        for media in media_rows:
+            media_by_product.setdefault(str(media["product_id"]), []).append(media)
+        total = len(products)
+        synced = 0
+        failed = 0
+        semaphore = asyncio.Semaphore(5)
+        async def process(index, product):
+            nonlocal synced, failed
+            async with semaphore:
+                try:
+                    pid = str(product["id"])
+                    result = await _process_lightspeed_product(
+                        ls, product,
+                        variants_by_product.get(pid, []),
+                        media_by_product.get(pid, []),
+                        markup
+                    )
+                    if result.get("success"):
+                        async with deps.pool.acquire() as conn:
+                            await conn.execute("""
+                                UPDATE products
+                                SET lightspeed_sync_status = 'synced',
+                                    lightspeed_product_id = $1,
+                                    updated_at = $2
+                                WHERE id = $3
+                            """, str(result.get("lightspeed_id", "")), utc_now(), product["id"])
+                        synced += 1
+                    else:
+                        async with deps.pool.acquire() as conn:
+                            await conn.execute("""
+                                UPDATE products
+                                SET lightspeed_sync_status = 'failed',
+                                    updated_at = $1
+                                WHERE id = $2
+                            """, utc_now(), product["id"])
+                        failed += 1
+                    processed = index + 1
+                    progress = int((processed / total) * 100)
+                    await update_sync_log(
+                        log_id, "running",
+                        f"Pushed {synced}/{total} to Lightspeed ({failed} failed)",
+                        progress=progress, total=total, processed=synced
+                    )
+                except Exception as e:
+                    logger.exception(f"Lightspeed product sync failed: {product.get('id')}: {e}")
+                    failed += 1
+                    async with deps.pool.acquire() as conn:
+                        await conn.execute("""
+                            UPDATE products
+                            SET lightspeed_sync_status = 'failed', updated_at = $1
+                            WHERE id = $2
+                        """, utc_now(), product["id"])
+        await asyncio.gather(*(process(i, p) for i, p in enumerate(products)))
         msg = f"Lightspeed push complete: {synced} synced, {failed} failed out of {total}"
-        await update_sync_log(log_id, 'completed', msg, progress=100, total=total, processed=synced)
+        await update_sync_log(log_id, "completed", msg, progress=100, total=total, processed=synced)
         logger.info(msg)
     except Exception as e:
-        logger.error(f"Lightspeed push error: {e}")
-        await update_sync_log(log_id, 'failed', f'Error: {str(e)}')
+        logger.exception(f"Lightspeed push error: {e}")
+        await update_sync_log(log_id, "failed", f"Error: {str(e)}")

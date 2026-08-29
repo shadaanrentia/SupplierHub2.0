@@ -10,11 +10,12 @@ import os
 import json
 import logging
 from pathlib import Path
+import subprocess
+import sys
+import time as _time
 
 import deps
 from deps import new_id, hash_password, utc_now
-import subprocess
-import time as _time
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -37,6 +38,11 @@ def _ensure_postgresql():
     if host not in ('localhost', '127.0.0.1'):
         logger.info(f"PostgreSQL host is '{host}' (external) — skipping local management")
         return True
+
+    if sys.platform.startswith('win'):
+        logger.info("Running on Windows; skipping Linux-specific PostgreSQL auto-install/start logic")
+        return True
+
     pg_running = False
 
     for attempt in range(3):
@@ -263,6 +269,36 @@ async def startup():
             "ALTER TABLE settings ADD COLUMN IF NOT EXISTS lightspeed_token_expires_at TIMESTAMP",
         ]:
             await conn.execute(alt)
+
+        # Persistent Lightspeed image synchronization jobs
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS lightspeed_image_jobs (
+                id VARCHAR(64) PRIMARY KEY,
+                product_id VARCHAR(64) REFERENCES products(id) ON DELETE CASCADE,
+                lightspeed_product_id VARCHAR(100) NOT NULL,
+                status VARCHAR(30) DEFAULT 'pending',
+                total_images INTEGER DEFAULT 0,
+                uploaded_images INTEGER DEFAULT 0,
+                failed_images INTEGER DEFAULT 0,
+                current_image TEXT,
+                error_message TEXT,
+                retry_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        await conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_ls_image_jobs_status '
+            'ON lightspeed_image_jobs(status)'
+        )
+
+        await conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_ls_image_jobs_product '
+            'ON lightspeed_image_jobs(product_id)'
+        )
 
         # Migration: change lightspeed_category_id from INTEGER to TEXT if needed
         try:

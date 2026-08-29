@@ -223,14 +223,28 @@ async def sync_preprocessed_to_lightspeed(data: dict = None, user: dict = Depend
                     'product_name': product.get('product_name'),
                     'supplier_sku': product.get('supplier_sku'),
                     'description': product.get('description'),
+                    'product_id': product['id'],
+                    # Brand
+                    'brand_name': product.get('brand'),
+
+                    # Pricing
                     'base_price': float(sale_price),
                     'cost_price': cost,
+                    'calculated_sale_price': float(sale_price),
+                    'sale_price': float(sale_price),
+                    'retail_price': float(sale_price),
+
+                    # ONLY use manually mapped Lightspeed category
                     'category_id': product.get('lightspeed_category_id'),
+
+                    # Supplier from SupplierHub
                     'supplier_name': supplier_name,
+
+                    # Variants + media
                     'variants': [row_to_dict(v) for v in variants],
                     'images': [row_to_dict(i) for i in images],
                 }
-                result = ls.create_or_update_product(ls_data)
+                result = await ls.create_or_update_product(ls_data)
                 if result.get('success'):
                     await conn.execute(
                         "UPDATE products SET lightspeed_sync_status='synced', lightspeed_product_id=$1, updated_at=NOW() WHERE id=$2",
