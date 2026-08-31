@@ -97,7 +97,7 @@ export default function Suppliers() {
   const handleTestConnection = async (supplierId) => {
     setTesting(supplierId);
     try {
-      const res = await axios.post(`${API}/suppliers/${supplierId}/test-connection`);
+      const res = await axios.post(`${API}/suppliers/${supplierId}/test`);
       setTestResults(prev => ({ ...prev, [supplierId]: res.data }));
       if (res.data.success) {
         toast.success("Connection successful!");
