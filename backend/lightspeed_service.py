@@ -413,19 +413,13 @@ class LightspeedService:
 
         cache_key = brand_name.casefold()
 
-        # ---------------------------------------------------------
         # 1. FAST CACHE LOOKUP
-        # ---------------------------------------------------------
-
         cached_id = self._brand_cache.get(cache_key)
 
         if cached_id:
             return str(cached_id)
 
-        # ---------------------------------------------------------
         # 2. LOAD COMPLETE BRAND CATALOG
-        # ---------------------------------------------------------
-
         with self._brand_catalog_lock:
 
             cached_id = self._brand_cache.get(cache_key)
@@ -500,9 +494,7 @@ class LightspeedService:
 
                             total_loaded += 1
 
-                        # -------------------------------------------------
                         # Check pagination information
-                        # -------------------------------------------------
 
                         page_info = {}
 
@@ -543,10 +535,7 @@ class LightspeedService:
                         exc_info=True
                     )
 
-            # ---------------------------------------------------------
             # 3. TRY CACHE AGAIN
-            # ---------------------------------------------------------
-
             cached_id = self._brand_cache.get(cache_key)
 
             if cached_id:
@@ -558,10 +547,7 @@ class LightspeedService:
 
                 return str(cached_id)
 
-        # ---------------------------------------------------------
         # 4. BRAND DOES NOT EXIST — CREATE IT
-        # ---------------------------------------------------------
-
         try:
 
             logger.info(
@@ -795,10 +781,8 @@ class LightspeedService:
                 f"Supplier={supplier_name} (ID={ls_supplier_id}), "
                 f"Brand={brand_name} (ID={ls_brand_id})"
             )
-            existing_product_id = await asyncio.to_thread(
-                self._find_product_by_sku,
-                sku
-            )
+            existing_product_id = await asyncio.to_thread(self._find_product_by_sku, sku)
+
             if existing_product_id:
                 logger.info(
                     f"Found existing Lightspeed product by SKU: "
@@ -865,27 +849,37 @@ class LightspeedService:
                     supplier_variants=variants,
                     retail_price=sale_price,
                     product_name=product.get("product_name", ""),
-                    supplier_id=ls_supplier_id
+                    supplier_id=ls_supplier_id,
+                    enable_inventory_tracking=True
                 )
-            activated = await asyncio.to_thread(
-                self._activate_online_store_product,
-                ls_id
-            )
-            if not activated:
-                logger.error(
-                    f"Failed to activate POS + Online Store "
-                    f"for Lightspeed product {ls_id}"
+            if created:
+                activated = await asyncio.to_thread(
+                    self._activate_online_store_product,
+                    ls_id
                 )
-            if images:
+
+                if not activated:
+                    logger.error(
+                        f"Failed to activate POS + Online Store "
+                        f"for Lightspeed product {ls_id}"
+                    )
+            if images and created:
                 self._image_executor.submit(
                     self._upload_images,
                     ls_id,
                     images
                 )
+
                 logger.info(
-                    f"Image sync queued in background for "
+                    f"Image sync queued for newly created "
                     f"Lightspeed product {ls_id}: "
                     f"{len(images)} images"
+                )
+
+            elif images:
+                logger.info(
+                    f"Skipping image upload for existing "
+                    f"Lightspeed product {ls_id}"
                 )
             return {
                 "success": True,
@@ -940,7 +934,8 @@ class LightspeedService:
         supplier_variants: list,
         retail_price: float,
         product_name: str = "",
-        supplier_id: str = None
+        supplier_id: str = None,
+        enable_inventory_tracking: bool = False
     ):
         """
         Sync SupplierHub variants to Lightspeed.
@@ -1050,44 +1045,19 @@ class LightspeedService:
                 if not ls_id:
                     continue
 
-                # Try normal SKU fields first
-                ls_sku = str(
+                variant_sku = str(
                     item.get("sku")
                     or item.get("product_code")
+                    or item.get("primary_sku_code")
                     or ""
                 ).strip()
 
-                # Fallback to product_codes / codes
-                if not ls_sku:
+                if not variant_sku:
+                    continue
 
-                    codes = (
-                        item.get("product_codes")
-                        or item.get("codes")
-                        or []
-                    )
-
-                    if isinstance(codes, list):
-
-                        for code in codes:
-
-                            if not isinstance(code, dict):
-                                continue
-
-                            value = (
-                                code.get("code")
-                                or code.get("value")
-                                or ""
-                            )
-
-                            if value:
-                                ls_sku = str(value).strip()
-                                break
-
-                if ls_sku:
-
-                    lightspeed_by_sku[
-                        ls_sku.casefold()
-                    ] = item
+                lightspeed_by_sku[
+                    variant_sku.casefold()
+                ] = item
 
             logger.info(
                 f"Mapped {len(lightspeed_by_sku)} Lightspeed "
@@ -1150,50 +1120,46 @@ class LightspeedService:
             # Do NOT put it inside "details".
             # =========================================================
 
-            enable_inventory_payload = {
-                "common": {
-                    "track_inventory": True
+            inventory_tracking_enabled = True
+
+            if enable_inventory_tracking:
+
+                enable_inventory_payload = {
+                    "common": {
+                        "track_inventory": True
+                    }
                 }
-            }
 
-            logger.info(
-                f"Enabling inventory tracking for Lightspeed "
-                f"product family '{product_name}' "
-                f"(Product ID: {product_id})"
-            )
-
-            enable_result = self._put_legacy_21(
-                f"products/{product_id}",
-                enable_inventory_payload
-            )
-
-            inventory_tracking_enabled = not (
-                isinstance(enable_result, dict)
-                and enable_result.get("_lightspeed_validation_error")
-            )
-
-            if (
-                isinstance(enable_result, dict)
-                and enable_result.get(
-                    "_lightspeed_validation_error"
-                )
-            ):
-                inventory_tracking_enabled = False
-
-                logger.error(
-                    f"Failed to enable inventory tracking for "
-                    f"Lightspeed product family "
-                    f"{product_name} "
-                    f"(ID: {product_id}): "
-                    f"{enable_result}"
-                )
-
-            else:
                 logger.info(
-                    f"Inventory tracking enabled for "
-                    f"Lightspeed product family "
-                    f"'{product_name}'"
+                    f"Enabling inventory tracking for Lightspeed "
+                    f"product family '{product_name}' "
+                    f"(Product ID: {product_id})"
                 )
+
+                enable_result = self._put_legacy_21(
+                    f"products/{product_id}",
+                    enable_inventory_payload
+                )
+
+                inventory_tracking_enabled = not (
+                    isinstance(enable_result, dict)
+                    and enable_result.get("_lightspeed_validation_error")
+                )
+
+                if not inventory_tracking_enabled:
+                    logger.error(
+                        f"Failed to enable inventory tracking for "
+                        f"Lightspeed product family "
+                        f"'{product_name}' "
+                        f"(ID: {product_id}): "
+                        f"{enable_result}"
+                    )
+                else:
+                    logger.info(
+                        f"Inventory tracking enabled for "
+                        f"Lightspeed product family "
+                        f"'{product_name}'"
+                    )
 
             # =========================================================
             # 7. BUILD VARIANT UPDATE TASKS
@@ -1400,66 +1366,56 @@ class LightspeedService:
         supplier_id: str = None,
         brand_id: str = None
     ) -> str:
-        """Update existing Lightspeed product and sync variants."""
+        """
+        Efficiently synchronize an existing Lightspeed product.
 
-        update_data = {
-            "price_excluding_tax": float(sale_price),
-            "is_active": True
-        }
+        Existing product sync:
+        - Update variant prices
+        - Update supplier costs
+        - Update inventory
+        - Enable inventory tracking
+        - Keep product available in POS + Online Store
 
-        if product.get("category_id"):
-            update_data["product_category_id"] = str(product["category_id"])
-
-        if brand_id:
-            update_data["brand_id"] = str(brand_id)
-
-        if supplier_id:
-            update_data["supplier_id"] = str(supplier_id)
+        Images are skipped for existing products.
+        """
 
         try:
+            product_name = str(
+                product.get("product_name") or ""
+            ).strip()
+
+            variants = product.get("variants") or []
+
             logger.info(
-                f"Updating Lightspeed product {product_id} "
-                f"with fields: {list(update_data.keys())}"
+                f"Updating existing Lightspeed product "
+                f"'{product_name}' (ID: {product_id})"
             )
 
-            response = self._put(
-                f"products/{product_id}",
-                update_data
-            )
-
-            if (
-                isinstance(response, dict)
-                and response.get("_lightspeed_validation_error")
-            ):
-                logger.error(
-                    f"Lightspeed parent product update rejected: {response}"
-                )
-            else:
-                logger.info(
-                    f"Successfully updated Lightspeed parent product "
-                    f"{product.get('supplier_sku', '')} "
-                    f"(ID: {product_id})"
-                )
-
-            variants = product.get("variants", []) or []
-
+            # Sync existing variants:
+            # prices, supplier costs and inventory
             if variants:
                 await self._sync_existing_variants(
                     product_id=product_id,
                     supplier_variants=variants,
                     retail_price=sale_price,
-                    product_name=product.get("product_name", ""),
+                    product_name=product_name,
                     supplier_id=supplier_id
                 )
+
+            logger.info(
+                f"Existing Lightspeed product synchronization completed "
+                f"for '{product_name}'"
+            )
 
             return product_id
 
         except Exception as e:
             logger.error(
-                f"Lightspeed product update failed "
+                f"Lightspeed existing product sync failed "
                 f"(ID: {product_id}): {e}",
                 exc_info=True
             )
+
             return product_id
 
     async def _create_product(self, product: dict, variants: list, cost_price: float, sale_price: float, supplier_id: str = None, brand_id: str = None) -> str:
@@ -1537,7 +1493,7 @@ class LightspeedService:
                     v_price = float(v_price)
                 except (TypeError, ValueError):
                     v_price = float(sale_price)
-                variant_list.append({
+                variant_payload = {
                     "sku": v_sku,
                     "price_excluding_tax": v_price,
                     "is_active": True,
@@ -1546,16 +1502,26 @@ class LightspeedService:
                             {
                                 "supplier_id": str(supplier_id),
                                 "code": v_sku,
-                                "price": float(
-                                    supplier_variant_price
-                                )
+                                "price": float(supplier_variant_price)
                             }
                         ]
                         if supplier_id
                         else []
                     ),
                     "variant_definitions": definitions
-                })
+                }
+
+                # Add the main SupplierHub product SKU as an additional
+                # searchable product code on the first variant.
+                if len(variant_list) == 0 and sku:
+                    variant_payload["product_codes"] = [
+                        {
+                            "code": sku,
+                            "type": "CUSTOM"
+                        }
+                    ]
+
+                variant_list.append(variant_payload)
             if not variant_list:
                 return self._create_simple_product(
                     product_name,
@@ -1570,6 +1536,7 @@ class LightspeedService:
             payload = {
                 "name": product_name,
                 "description": description,
+                "sku": sku,
                 "supply_price": cost_price,
                 "price_excluding_tax": sale_price,
                 "status": "ACTIVE",
@@ -1717,38 +1684,125 @@ class LightspeedService:
         return None
 
     def _find_product_by_sku(self, sku: str):
-        """Find and cache a Lightspeed product ID by SKU."""
+        """Find a Lightspeed product by SKU or product code."""
+
+        sku = str(sku or "").strip()
+
         if not sku:
             return None
-        sku = str(sku).strip()
-        if not sku:
-            return None
-        cache_key = sku.casefold()
-        if cache_key in self._product_sku_cache:
-            return self._product_sku_cache[cache_key]
+
         try:
-            data = self._get(
-                "products",
-                params={"sku": sku}
+            logger.info(
+                f"Searching Lightspeed for product SKU: {sku}"
             )
-            items = data.get("data", [])
-            if isinstance(items, dict):
-                items = (
-                    items.get("products")
-                    or items.get("data")
-                    or items.get("items")
+
+            response = self._get(
+                "products",
+                params={
+                    "sku": sku,
+                    "limit": 100
+                }
+            )
+
+            if not isinstance(response, dict):
+                logger.warning(
+                    f"Invalid Lightspeed SKU search response "
+                    f"for {sku}"
+                )
+                return None
+
+            data = response.get("data")
+
+            # Convert a single product object into a list
+            if isinstance(data, dict):
+
+                # Direct product response
+                if data.get("id"):
+                    items = [data]
+
+                # Nested collection response
+                else:
+                    items = (
+                        data.get("products")
+                        or data.get("items")
+                        or data.get("data")
+                        or []
+                    )
+
+            elif isinstance(data, list):
+                items = data
+
+            else:
+                items = []
+
+            if not isinstance(items, list):
+                items = []
+
+            logger.info(
+                f"Lightspeed SKU search returned "
+                f"{len(items)} result(s) for {sku}"
+            )
+
+            for item in items:
+
+                if not isinstance(item, dict):
+                    continue
+
+                product_id = item.get("id")
+
+                if not product_id:
+                    continue
+
+                # Check primary SKU
+                primary_sku = str(
+                    item.get("sku") or ""
+                ).strip()
+
+                if primary_sku.casefold() == sku.casefold():
+
+                    logger.info(
+                        f"Found Lightspeed product by primary SKU "
+                        f"{sku} -> {product_id}"
+                    )
+
+                    return str(product_id)
+
+                # Check additional product codes
+                product_codes = (
+                    item.get("product_codes")
                     or []
                 )
-            if isinstance(items, list) and items:
-                product_id = items[0].get("id")
-                if product_id:
-                    product_id = str(product_id)
-                    self._product_sku_cache[cache_key] = product_id
-                    return product_id
-        except Exception as e:
-            logger.warning(
-                f"Lightspeed SKU lookup failed for {sku}: {e}"
+
+                for code_data in product_codes:
+
+                    if not isinstance(code_data, dict):
+                        continue
+
+                    product_code = str(
+                        code_data.get("code") or ""
+                    ).strip()
+
+                    if product_code.casefold() == sku.casefold():
+
+                        logger.info(
+                            f"Found Lightspeed product by product code "
+                            f"{sku} -> {product_id}"
+                        )
+
+                        return str(product_id)
+
+            logger.info(
+                f"No exact Lightspeed product found for SKU {sku}"
             )
+
+        except Exception as e:
+
+            logger.warning(
+                f"Failed to find Lightspeed product "
+                f"by SKU {sku}: {e}",
+                exc_info=True
+            )
+
         return None
 
     def _upload_images(self, product_id: str, images: list):
@@ -1794,9 +1848,7 @@ class LightspeedService:
                 filename = f"product_{product_id}_img_{index}.jpg"
                 content_type = "image/jpeg"
 
-                # ---------------------------------------------------------
                 # 1. LOCAL FILE
-                # ---------------------------------------------------------
 
                 if img_path and os.path.exists(img_path):
 
@@ -1811,10 +1863,7 @@ class LightspeedService:
                         logger.warning(
                             f"Could not read image #{index}: {e}"
                         )
-
-                # ---------------------------------------------------------
                 # 2. BASE64 IMAGE
-                # ---------------------------------------------------------
 
                 elif img_base64:
 
@@ -1841,9 +1890,7 @@ class LightspeedService:
                             f"Could not decode image #{index}: {e}"
                         )
 
-                # ---------------------------------------------------------
                 # 3. REMOTE URL
-                # ---------------------------------------------------------
 
                 elif img_url:
 
@@ -1903,9 +1950,7 @@ class LightspeedService:
                             "error": f"Image download failed: {e}"
                         }
 
-                # ---------------------------------------------------------
                 # 4. VALIDATE IMAGE DATA
-                # ---------------------------------------------------------
 
                 if not image_bytes:
 
@@ -1916,10 +1961,7 @@ class LightspeedService:
                         "error": "No usable image data"
                     }
 
-                # ---------------------------------------------------------
                 # 5. UPLOAD TO LIGHTSPEED
-                # ---------------------------------------------------------
-
                 result = self._upload(
                     f"products/{product_id}/actions/image_upload",
                     image_bytes,
